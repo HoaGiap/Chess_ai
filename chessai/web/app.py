@@ -18,7 +18,13 @@ from pydantic import BaseModel
 from ..position import MoveError
 from .ai import AIController
 from .games import GameNotFound, GameStore
-from .rooms import NoUndo, RoomError, RoomStore, Unauthorized
+from .rooms import (
+    NoUndo,
+    PhongChoi,
+    RoomError,
+    RoomStore,
+    Unauthorized,
+)
 
 # Ghi charset UTF-8 tường minh cho file tĩnh. `mimetypes` mặc định trả
 # "application/javascript" không charset; dù module script theo HTML spec vẫn
@@ -96,22 +102,26 @@ def create_app(
 
     @app.get("/api/game/{game_id}")
     def read_game(game_id: str) -> JSONResponse:
-        return _guard(games.snapshot, game_id)
+        return _guard(_doc_thuong, games, game_id)
 
     @app.post("/api/game/{game_id}/move")
     def move(game_id: str, payload: MoveRequest) -> JSONResponse:
-        return _guard(games.submit, game_id, payload.san)
+        return _guard(_move_thuong, games, game_id, payload.san)
 
     @app.post("/api/game/{game_id}/undo")
     def undo(game_id: str) -> JSONResponse:
         # Hủy trước: nếu AI đang nghĩ, kết quả của nó đã lỗi thời.
         controller.cancel(game_id)
-        return _guard(games.undo, game_id)
+        return _guard(_undo_thuong, games, game_id)
 
     @app.post("/api/game/{game_id}/new")
     def new_game(game_id: str) -> JSONResponse:
         controller.cancel(game_id)
-        return _guard(_van_moi_va_bat_dau_ai, games, controller, game_id)
+        return _guard(_van_moi_thuong, games, controller, game_id)
+
+    @app.get("/api/game/{game_id}")
+    def read_game(game_id: str) -> JSONResponse:
+        return _guard(_doc_thuong, games, game_id)
 
     @app.get("/api/game/{game_id}/pgn")
     def pgn(game_id: str) -> JSONResponse:
@@ -122,6 +132,17 @@ def create_app(
 
     def _token(x_player: str | None) -> str:
         return _token_of(x_player)
+
+    def _van_thuong(game_id: str) -> str:
+        """Từ chối ván của phòng.
+
+        `POST /api/game/{id}/undo|move|new` KHÔNG có token và không kiểm ghế,
+        nên nếu ván phòng đi qua đó được thì bất kỳ ai cũng lùi/đi thay được —
+        và nút "Ván mới" trên trang cũng gọi đúng `/new` đó.
+        """
+        if games.is_protected(game_id):
+            raise PhongChoi()
+        return game_id
 
     @app.get("/api/me")
     def me() -> JSONResponse:
@@ -161,6 +182,23 @@ def create_app(
     ) -> JSONResponse:
         return _guard(lambda: phong.start(room_id, _token(x_player)).as_dict())
 
+    @app.get("/api/rooms/{room_id}/state")
+    def room_state(
+        room_id: str, x_player: str | None = Header(default=None)
+    ) -> JSONResponse:
+        """Cặp (phòng, ván) cho DỰ PHÒNG POLL (C3).
+
+        Poll chỉ hỏi `/api/rooms/{id}` thì chỉ nhận ghế, không nhận bàn cờ —
+        WebSocket hỏng thì bàn đứng yên vĩnh viễn, đúng cái C3 cần tránh.
+        """
+        return _guard(lambda: phong.state(room_id, _token(x_player)))
+
+    @app.post("/api/rooms/{room_id}/forfeit")
+    def room_forfeit(
+        room_id: str, x_player: str | None = Header(default=None)
+    ) -> JSONResponse:
+        return _guard(_phong_ket_thuan, phong, room_id, x_player)
+
     @app.post("/api/rooms/{room_id}/rematch")
     def rematch_room(
         room_id: str, x_player: str | None = Header(default=None)
@@ -199,7 +237,11 @@ def create_app(
             await websocket.close(code=1008)
             return
         try:
-            phong.view(room_id, token)
+            # PhảI CÓ GHẾ. Chỉ kiểm "token dài và phòng tồn tại" thì bất kỳ
+            # chuỗi 16 ký tự nào cũng nhận được toàn bộ trạng thái phòng.
+            if phong.view(room_id, token).you is None:
+                await websocket.close(code=1008)
+                return
         except RoomError:
             await websocket.close(code=1008)
             return
@@ -243,6 +285,35 @@ def _khong_cho_lui(x_player: str | None) -> None:
 
 def _tao_phong(phong: RoomStore, x_player: str | None) -> JSONResponse:
     return JSONResponse({"room_id": phong.create(_token_of(x_player))}, status_code=201)
+
+
+def _doc_thuong(games: GameStore, game_id: str) -> dict:
+    if games.is_protected(game_id):
+        raise PhongChoi()
+    return games.snapshot(game_id).model_dump()
+
+
+def _move_thuong(games: GameStore, game_id: str, san: str) -> dict:
+    if games.is_protected(game_id):
+        raise PhongChoi()
+    return games.submit(game_id, san).model_dump()
+
+
+def _undo_thuong(games: GameStore, game_id: str) -> dict:
+    if games.is_protected(game_id):
+        raise PhongChoi()
+    return games.undo(game_id).model_dump()
+
+
+def _van_moi_thuong(games: GameStore, controller: AIController, game_id: str):
+    if games.is_protected(game_id):
+        raise PhongChoi()
+    return _van_moi_va_bat_dau_ai(games, controller, game_id)
+
+
+def _phong_ket_thuan(phong, room_id: str, x_player: str | None) -> dict:
+    view, state = phong.forfeit(room_id, _token_of(x_player))
+    return {"room": view.as_dict(), "game": state.model_dump()}
 
 
 def _phong_move(phong, room_id: str, x_player: str | None, san: str) -> dict:
@@ -291,6 +362,15 @@ def _van_moi_va_bat_dau_ai(games: GameStore, ai: AIController, game_id: str) -> 
     games.new_game(game_id)
     ai.attach(game_id)
     return games.snapshot(game_id).model_dump()
+
+
+# `_room_state` chỉ còn làm bọc: `RoomStore.state` đọc phòng + ván trong MỘT
+# lần giữ khoá, nên không thể ghép phòng thời điểm T1 với ván thời điểm T2.
+def _room_state(phong: RoomStore, room_id: str, token: str) -> dict:
+    try:
+        return phong.state(room_id, token)
+    except RoomError:
+        return {"room": None, "game": None, "error": "Phòng không còn tồn tại."}
 
 
 app = create_app()

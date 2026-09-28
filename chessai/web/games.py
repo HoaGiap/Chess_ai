@@ -98,6 +98,10 @@ class GameStore:
         # Thứ tự chèn, để cắt bỏ ván cũ nhất khi đầy (thay cho OrderedDict
         # để `dict` chỉ cần hỗ trợ xoá giữa chừng).
         self._order: list[str] = []
+        # Ván của phòng chơi: KHÔNG được cắt khi trần bộ nhớ đầy. Cắt mất
+        # thì mọi lệnh phòng ném `GameNotFound` — mà nó không phải
+        # `RoomError`, nên làm hỏng cả sảnh phòng chứ không chỉ phòng đó.
+        self._protected: set[str] = set()
         self._guard = threading.Lock()
 
     def create(
@@ -105,6 +109,7 @@ class GameStore:
         human_color: chess.Color | None,
         elo: int = 1500,
         mode: str = "play",
+        protected: bool = False,
     ) -> str:
         game_id = secrets.token_urlsafe(16)[:_ID_LENGTH]
         with self._guard:
@@ -112,10 +117,43 @@ class GameStore:
                 human_color=human_color, elo=elo, mode=mode
             )
             self._locks[game_id] = threading.Lock()
+            if protected:
+                self._protected.add(game_id)
             self._order.append(game_id)
-            while len(self._order) > self.capacity:
-                self._drop(self._order[0])
+            self._cat_binh_ho()
         return game_id
+
+    def exists(self, game_id: str) -> bool:
+        """Ván còn trong bộ nhớ không — rẻ hơn nhiều so với `snapshot`."""
+        with self._guard:
+            return game_id in self._games
+
+    def is_protected(self, game_id: str) -> bool:
+        """True nếu ván này thuộc về một phòng — không được đụng qua
+        `POST /api/game/{id}/...` (lệnh đó không có token, không kiểm ghế)."""
+        with self._guard:
+            return game_id in self._protected
+
+    def protect(self, game_id: str) -> None:
+        with self._guard:
+            self._require(game_id)
+            self._protected.add(game_id)
+
+    def _cat_binh_ho(self) -> None:
+        """Cắt bỏ ván cũ nhất cho tới khi vừa trần, BỎ QUA ván được bảo vệ.
+
+        Phải gọi khi đang giữ `_guard`. Nếu mọi ván đều được bảo vệ thì không
+        cắt được gì và bộ nhớ phình — chấp nhận được, vì ván bảo vệ chỉ do phòng
+        tạo ra (tối đa bằng trần phòng).
+        """
+        for index, game_id in enumerate(self._order):
+            if len(self._order) - index <= self.capacity:
+                return
+            if game_id in self._protected:
+                continue
+            self._drop(game_id)
+            if len(self._order) <= self.capacity:
+                return
 
     def set_thinking(self, game_id: str, value: bool) -> None:
         """Cờ 'AI đang nghĩ'. KHÔNG lấy khoá: đây là cờ hiển thị, không phải
@@ -123,9 +161,14 @@ class GameStore:
         self._require(game_id).thinking = value
 
     def forget(self, game_id: str) -> None:
-        """Xoá ván khỏi bộ nhớ — mô phỏng hành vi mất ván khi máy chủ restart."""
+        """Xoá ván khỏi bộ nhớ — mô phỏng hành vi mất ván khi máy chủ restart.
+
+        Bỏ cả cờ bảo vệ: đây là cách duy nhất mô phỏng "ván phòng biến mất"
+        để kiểm tra đường lỗi.
+        """
         with self._guard:
             self._require(game_id)
+            self._protected.discard(game_id)
             self._drop(game_id)
 
     def session(self, game_id: str) -> Session:

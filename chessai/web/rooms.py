@@ -4,6 +4,11 @@ Mỗi phòng có một `game_id` trỏ vào `GameStore`, và `human_color` của
 LUÔN là `None` (không có AI trong phòng) — nên `AIController` không can thiệp
 và `Session` không chặn lượt; việc chặn lượt là của tầng này, theo **ghế**.
 
+BÍ MẬT: mã người chơi (`X-Player`, 2^128) là thứ duy nhất chứng minh "bạn là
+bạn". Vì vậy nó **KHÔNG BAO GIỜ** nằm trong `RoomView` — chỉ ghế trống/đầy và
+vài câu hỏi đã trả lời sẵn mới ra ngoài. Gửi token thật thì bất kỳ ai cũng
+lấy được từ `GET /api/rooms` rồi chơi thay người đó.
+
 Giới hạn đã biết: chỉ chạy được trong MỘT tiến trình máy chủ. Chạy
 `--workers 2` thì hai người ở hai phòng khác tiến trình sẽ không thấy nhau —
 cần khoá dùng chung mới xử lý được.
@@ -17,7 +22,7 @@ import time
 
 import chess
 
-from .games import GameStore
+from .games import GameNotFound, GameStore
 from .schema import GameState
 
 # Không dùng l, o, i, 0, 1: người ta sẽ đọc to mã phòng cho người khác.
@@ -92,12 +97,23 @@ class NoUndo(RoomError):
         super().__init__("Trong phòng không có nút lùi nước.")
 
 
+class OpponentOnline(RoomError):
+    def __init__(self) -> None:
+        super().__init__("Đối thủ vẫn đang ở trong phòng.")
+
+
 class RoomView:
-    """Thông tin công khai của một phòng, đã cắt bớt cho người gọi."""
+    """Thông tin công khai của phòng.
+
+    CỐ TÌNH KHÔNG chứa token người chơi: chỉ có câu trả lời ("ghế này có
+    người", "bạn có phải host", "bạn có ngồi trong phòng"). `token` là tham số
+    vào để so sánh nội bộ rồi bỏ đi.
+    """
 
     __slots__ = (
-        "id", "white", "black", "host", "started", "finished", "result_text",
-        "you", "connected", "opponent_connected", "created_at",
+        "id", "seat_white", "seat_black", "host_is_you", "you_in_room", "you",
+        "started", "finished", "result_text", "connected",
+        "opponent_connected", "status", "created_at",
     )
 
     def __init__(self, **kw) -> None:
@@ -105,24 +121,8 @@ class RoomView:
             setattr(self, ten, kw.get(ten))
 
     def as_dict(self) -> dict:
-        du = {ten: getattr(self, ten) for ten in self.__slots__
-              if ten != "created_at"}
-        # `status` là property nên không nằm trong __slots__ — phải thêm tay,
-        # nếu không trình duyệt không có gì để hiện trong danh sách phòng.
-        du["status"] = self.status
-        return du
-
-    @property
-    def status(self) -> str:
-        if self.finished:
-            return "Xong"
-        if self.started:
-            return "Đang đấu"
-        if self.white and self.black:
-            return "Sẵn sàng"
-        if self.white or self.black:
-            return "Chờ đối thủ"
-        return "Chờ người"
+        return {ten: getattr(self, ten) for ten in self.__slots__
+                if ten != "created_at"}
 
 
 class _Room:
@@ -134,10 +134,22 @@ class _Room:
         self.created_at = time.monotonic()
         self.white: str | None = None
         self.black: str | None = None
-        self.host = host
+        self.host: str | None = host
         self.game_id = game_id
         self.started = False
         self.connected: set[str] = set()
+
+    def seat_of(self, token: str | None) -> str | None:
+        if token is None:
+            return None
+        if token == self.white:
+            return "white"
+        if token == self.black:
+            return "black"
+        return None
+
+    def other(self, token: str) -> str | None:
+        return self.black if token == self.white else self.white
 
 
 class RoomStore:
@@ -177,51 +189,92 @@ class RoomStore:
         if room_id in self._order:
             self._order.remove(room_id)
 
+    def _snapshot_or_hong(self, room: _Room) -> GameState:
+        """Trạng thái ván, hoặc `GameNotFound` nếu ván đã biến mất."""
+        return self.games.snapshot(room.game_id)
+
     def _view(self, room: _Room, token: str | None) -> RoomView:
-        state = None
-        if room.started:
-            state = self.games.snapshot(room.game_id)
-        you = None
-        if token is not None:
-            if room.white == token:
-                you = "white"
-            elif room.black == token:
-                you = "black"
-        # Ghế của ĐỐI THỦ: `connected` là của chính người gọi (dùng cho phòng
-        # chờ), `opponent_connected` mới là thứ trình duyệt dùng để báo mất
-        # kết nối. Nhầm hai cái thì cảnh báo sẽ không bao giờ hiện.
-        opponent_connected = True
-        if you == "white":
-            opponent_connected = room.black in room.connected
-        elif you == "black":
-            opponent_connected = room.white in room.connected
+        # Kiểm ván còn không, kể cả lúc phòng CHƯA bắt đầu: ván có thể biến
+        # mất bất cứ lúc nào, và phòng mà mất ván thì phải bị coi là hỏng.
+        # `exists` rẻ hơn `snapshot` nên `list()` vẫn không tốn.
+        if not self.games.exists(room.game_id):
+            raise GameNotFound(room.game_id)
+        state = self._snapshot_or_hong(room) if room.started else None
+        you = room.seat_of(token)
+        doi = room.other(token) if you else None
         return RoomView(
             id=room.id,
-            white=room.white,
-            black=room.black,
-            host=room.host,
+            seat_white=room.white is not None,
+            seat_black=room.black is not None,
+            host_is_you=(token is not None and room.host == token),
+            you_in_room=you is not None,
+            you=you,
             started=room.started,
             finished=bool(state.over) if state is not None else False,
             result_text=state.result_text if state is not None else None,
-            you=you,
             connected=(token in room.connected) if token is not None else False,
-            opponent_connected=opponent_connected,
+            opponent_connected=(doi in room.connected) if doi else True,
+            status=self._status(room, state),
             created_at=room.created_at,
         )
 
+    @staticmethod
+    def _status(room: _Room, state: GameState | None) -> str:
+        if state is not None and state.over:
+            return "Xong"
+        if room.started:
+            return "Đang đấu"
+        if room.white and room.black:
+            return "Sẵn sàng"
+        if room.white or room.black:
+            return "Chờ đối thủ"
+        return "Chờ người"
+
     def view(self, room_id: str, token: str | None = None) -> RoomView:
         with self._lock(room_id):
-            return self._view(self._require(room_id), token)
+            room = self._require(room_id)
+            try:
+                return self._view(room, token)
+            except GameNotFound:
+                # Ván biến mất (máy chủ restart, hoặc bị cắt sai) — phòng này
+                # hỏng thật, phải bỏ đi chứ không để lỗi lọt ra ngoài.
+                # `GameNotFound` KHÔNG phải `RoomError`, nên nếu lọt ra nó sẽ
+                # làm hỏng cả danh sách phòng, không chỉ phòng này.
+                self._drop(room_id)
+                raise NotFound() from None
 
     def list(self, token: str | None = None) -> list[RoomView]:
         with self._guard:
             ids = list(self._order)
-            rooms = [self._rooms[i] for i in ids if i in self._rooms]
-        return [self._view(r, token) for r in rooms]
+        ket_qua: list[RoomView] = []
+        for rid in ids:
+            try:
+                ket_qua.append(self.view(rid, token))
+            except NotFound:
+                continue          # phòng hỏng: bỏ qua, không làm hỏng cả danh sách
+        return ket_qua
 
     def game_id_of(self, room_id: str) -> str:
         with self._lock(room_id):
             return self._require(room_id).game_id
+
+    def state(self, room_id: str, token: str | None = None) -> dict:
+        """Cặp (phòng, ván) đọc trong MỘT lần giữ khoá.
+
+        Tách thành hai lệnh `view` + `snapshot` thì có thể ghép phòng thời điểm
+        T1 với ván thời điểm T2 — và phòng bị bỏ giữa hai lúc thì ném lỗi ra
+        ngoài. Đây là dữ liệu WebSocket và dự phòng poll đều dùng.
+        """
+        with self._lock(room_id):
+            room = self._require(room_id)
+            try:
+                return {
+                    "room": self._view(room, token).as_dict(),
+                    "game": self._snapshot_or_hong(room).model_dump(),
+                }
+            except GameNotFound:
+                self._drop(room_id)
+                raise NotFound() from None
 
     # ---- người nghe để đẩy trạng thái --------------------------------
 
@@ -249,7 +302,9 @@ class RoomStore:
     # ---- thao tác phòng ---------------------------------------------
 
     def create(self, host_token: str) -> str:
-        game_id = self.games.create(None)          # human_color=None: hai người
+        # `protected=True`: ván phòng không được cắt khi trần bộ nhớ đầy, và
+        # `POST /api/game/{id}/...` phải từ chối nó.
+        game_id = self.games.create(None, protected=True)
         room_id = self._new_id()
         with self._guard:
             room = _Room(room_id, game_id, host_token)
@@ -265,10 +320,20 @@ class RoomStore:
         self._notify(room_id)
         return room_id
 
+    def _chuan_hoa_host(self, room: _Room) -> None:
+        """Host phải là người ĐANG NGỒI ghế.
+
+        Nếu host rời phòng mà `host` vẫn trỏ về token của họ, thì người còn lại
+        bấm "Bắt đầu" sẽ bị từ chối vĩnh viễn — phòng treo không ai cứu được.
+        """
+        if room.host is not None and room.seat_of(room.host) is not None:
+            return
+        room.host = room.white or room.black
+
     def join(self, room_id: str, token: str) -> RoomView:
         with self._lock(room_id):
             room = self._require(room_id)
-            if room.white == token or room.black == token:
+            if room.seat_of(token) is not None:
                 view = self._view(room, token)      # vào lại: trả về chỗ cũ
             else:
                 if room.white is None:
@@ -281,6 +346,7 @@ class RoomStore:
                 # WebSocket sống", nên chỉ lớp WebSocket được quyết định. Nếu
                 # đánh dấu lúc vào phòng thì người vào bằng link mà WebSocket
                 # hỏng sẽ không bao giờ thấy cảnh báo mất kết nối.
+                self._chuan_hoa_host(room)
                 view = self._view(room, token)
         self._notify(room_id)
         return view
@@ -293,9 +359,7 @@ class RoomStore:
             elif room.black == token:
                 room.black = None
             room.connected.discard(token)
-            if room.host == token:
-                # Ghế host trống: nhường quyền cho người còn lại, nếu có.
-                room.host = room.white or room.black or token
+            self._chuan_hoa_host(room)
             if room.white is None or room.black is None:
                 room.started = False
             view = self._view(room, token)
@@ -342,11 +406,10 @@ class RoomStore:
     # ---- chơi --------------------------------------------------------
 
     def _seat_of(self, room: _Room, token: str) -> str:
-        if room.white == token:
-            return "white"
-        if room.black == token:
-            return "black"
-        raise NotInRoom()
+        seat = room.seat_of(token)
+        if seat is None:
+            raise NotInRoom()
+        return seat
 
     def move(self, room_id: str, token: str, san: str) -> tuple[RoomView, GameState]:
         with self._lock(room_id):
@@ -354,7 +417,7 @@ class RoomStore:
             if not room.started:
                 raise NotStarted()
             seat = self._seat_of(room, token)
-            state = self.games.snapshot(room.game_id)
+            state = self._snapshot_or_hong(room)
             if state.over:
                 raise GameOver()
             # Chặn theo GHẾ, không chỉ theo lượt.
@@ -368,15 +431,56 @@ class RoomStore:
     def resign(self, room_id: str, token: str) -> tuple[RoomView, GameState]:
         with self._lock(room_id):
             room = self._require(room_id)
+            # Chặn đầu hàng lúc chưa bắt đầu: ván sẽ thành "xong" vĩnh viễn
+            # mà không ai xoá được, phòng treo.
+            if not room.started:
+                raise NotStarted()
             seat = self._seat_of(room, token)
             color = chess.WHITE if seat == "white" else chess.BLACK
             self.games.session(room.game_id).resign(color)
-            state = self.games.snapshot(room.game_id)
+            state = self._snapshot_or_hong(room)
             view = self._view(room, token)
         self._notify(room_id)
         return view, state
 
+    def forfeit(self, room_id: str, token: str) -> tuple[RoomView, GameState]:
+        """Kết thúc ván vì đối thủ biến mất (C6).
 
-# Bảng chữ cái và độ dài: đã kiểm 31 ký hiệu, 8 ký tự ≈ 2^40 — đủ để link
-# ngắn mà khó đoán. Đây là CHE MỜ, không phải bí mật: bí mật thật là mã người
-# chơi (2^128) trong `localStorage`.
+        Không có cách này thì đối thủ chỉ cần đóng tab là cả ván treo: người
+        còn lại không thể đầu hàng (đó là thua), và host cũng chẳng làm được
+        gì nếu không có nút chơi lại.
+        """
+        with self._lock(room_id):
+            room = self._require(room_id)
+            if not room.started:
+                raise NotStarted()
+            self._seat_of(room, token)
+            state = self._snapshot_or_hong(room)
+            if state.over:
+                raise GameOver()
+            doi = room.other(token)
+            if doi is None or doi in room.connected:
+                raise OpponentOnline()
+            # `Session.resign` nhận MÀU (WHITE/BLACK), không phải token —
+            # truyền nhầm token sẽ khiến mọi token khác đều thành "Trắng".
+            mau = chess.WHITE if doi == room.white else chess.BLACK
+            self.games.session(room.game_id).resign(mau)
+            new_state = self._snapshot_or_hong(room)
+            view = self._view(room, token)
+        self._notify(room_id)
+        return view, new_state
+
+
+# Bảng chữ cái và độ dài: 31 ký hiệu, 8 ký tự ≈ 2^40 — đủ để link ngắn mà khó
+# đoán. Đây là CHE MỜ, không phải bí mật: bí mật thật là mã người chơi (2^128)
+# trong `localStorage`, và nó không bao giờ rời máy chủ.
+
+class PhongChoi(RoomError):
+    """Ván thuộc về một phòng — phải dùng route của phòng, không phải
+    `POST /api/game/{id}/...` (lệnh đó không có token, không kiểm ghế)."""
+
+    status_code = 400
+
+    def __init__(self) -> None:
+        super().__init__("Ván này thuộc một phòng chơi — hãy dùng nút trong phòng.")
+
