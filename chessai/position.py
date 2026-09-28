@@ -44,6 +44,17 @@ _CASTLING_TEXT = {
 
 _CASTLING_DEST = ("g1", "c1", "g8", "c8")
 
+# Nhập thành hai bên đều cần XE ở h1/a1 (h8/a8) — không phải tượng.
+_CASTLING_ROOK_VN = "xe"
+
+_PIECE_LETTERS = {
+    "K": chess.KING,
+    "Q": chess.QUEEN,
+    "R": chess.ROOK,
+    "B": chess.BISHOP,
+    "N": chess.KNIGHT,
+}
+
 
 class MoveError(Exception):
     """Nước không hợp lệ. Thông điệp đã bằng tiếng Việt, in thẳng ra được."""
@@ -82,16 +93,24 @@ def _castling_blocker(board: chess.Board, san: str) -> str:
     piece = board.piece_at(rook_at)
     side_name = "ngắn" if key == "O-O" else "dài"
     if piece is None or piece.piece_type != chess.ROOK or piece.color != turn:
-        kind = "xe" if key == "O-O" else "tượng"
-        return f"thiếu {kind} ở ô {chess.square_name(rook_at)} (nhập thành {side_name})."
+        return (
+            f"thiếu {_CASTLING_ROOK_VN} ở ô {chess.square_name(rook_at)} "
+            f"(nhập thành {side_name})."
+        )
 
     if not board.castling_rights & chess.BB_SQUARES[rook_at]:
-        return f"vua đã từng rời ô xuất phát nên mất quyền nhập thành {side_name}."
+        # castling_rights là bitboard các ô XE, không phân biệt vua hay xe đã đi.
+        return (
+            f"vua hoặc {_CASTLING_ROOK_VN} đã từng rời ô xuất phát, "
+            f"nên mất quyền nhập thành {side_name}."
+        )
 
     for raw in king_path:
         sq = _shift(raw, turn)
-        if board.is_attacked_by(turn, sq):
-            return f"ô {chess.square_name(sq)} đang bị tấn công — không được nhập thành qua ô bị chiếu."
+        # Hỏi phe ĐỐI THỦ có đang chiếu ô này không. Truyền `turn` sẽ hỏi
+        # chính phe đi và luôn trả về True ở ô vua, nên luôn báo nhầm e1/e8.
+        if board.is_attacked_by(not turn, sq):
+            return f"ô {chess.square_name(sq)} đang bị chiếu — không được nhập thành qua ô bị tấn công."
 
     return ""
 
@@ -105,6 +124,50 @@ def _en_passant_note(board: chess.Board, san: str) -> str:
     if text[-1] != landing or board.ep_square is not None:
         return ""
     return " Bắt tốt qua đường chỉ được ngay sau khi đối thủ vừa đi tốt 2 ô bằng một nước."
+
+
+def _target_of(san: str) -> tuple[int, int | None]:
+    """(loại quân, ô đích) suy ra từ SAN. Ô đích là None nếu không đọc được.
+
+    Không dùng `Board.parse_san` vì nước đang bị từ chối — thư viện ném lỗi.
+    """
+    text = san.replace(" ", "")
+    for suffix in ("+", "#", "!", "?"):
+        text = text.replace(suffix, "")
+    text = text.split("=")[0]
+    if not text:
+        return chess.PAWN, None
+    # Phải phân biệt HOA/thường: "Bxd3" là tượng, còn "bxd3" là tốt từ cột b.
+    head = text[:1]
+    piece = _PIECE_LETTERS[head] if head in _PIECE_LETTERS else chess.PAWN
+    try:
+        return piece, chess.parse_square(text[-2:].lower())
+    except ValueError:
+        return piece, None
+
+
+def _explain_illegal(board: chess.Board, san: str) -> str:
+    """Giải thích tiếng Việt vì sao nước đi không hợp lệ.
+
+    Ưu tiên các nguyên nhân hay gặp, thay vì lộ chuỗi của thư viện kèm FEN.
+    """
+    piece_type, dest = _target_of(san)
+    if dest is not None:
+        name = chess.square_name(dest)
+        occupant = board.piece_at(dest)
+        if occupant is not None and occupant.color == board.turn:
+            return f"ô {name} đang có {_PIECE_VN[occupant.piece_type]} CỦA BẠN — không bắt được quân của chính mình."
+        if occupant is not None and occupant.piece_type == chess.KING:
+            return f"không được bắt vua của đối thủ."
+        if board.is_attacked_by(not board.turn, dest):
+            return f"ô {name} đang bị chiếu — không được đi vào."
+        if piece_type == chess.PAWN and chess.square_rank(dest) in (0, 7):
+            return f"tốt tới {name} phải được phong cấp, ví dụ: {san}=Q."
+    if piece_type != chess.PAWN and not any(
+        board.pieces(piece_type, color) for color in (chess.WHITE, chess.BLACK)
+    ):
+        return f"bàn cờ không còn {_PIECE_VN[piece_type]} nào."
+    return "không phải nước đi hợp lệ trong thế cờ này — đã kiểm tra luật, quân và chiếu."
 
 
 def _castle_notation_note(san: str) -> str:
@@ -155,8 +218,11 @@ class Position:
     def ply_count(self) -> int:
         return len(self._board.move_stack)
 
-    def apply_san(self, san: str) -> None:
-        """Đi một nước. Ném `MoveError` và giữ nguyên thế cờ nếu nước sai."""
+    def apply_san(self, san: str) -> str:
+        """Đi một nước, trả về SAN chuẩn của nó.
+
+        Ném `MoveError` và giữ nguyên thế cờ nếu nước sai.
+        """
         text = san.strip()
         if not text:
             raise MoveError(f"Chưa nhập nước đi. Ví dụ hợp lệ: {_POPULAR}.")
@@ -166,15 +232,18 @@ class Position:
             raise MoveError(
                 f"Không rõ quân nào đi '{text}'. Ghi rõ hậu tốc, ví dụ: Nbd2."
             ) from None
-        except chess.IllegalMoveError as exc:
-            raise MoveError(self._illegal_message(text, exc)) from None
+        except chess.IllegalMoveError:
+            raise MoveError(self._illegal_message(text)) from None
         except chess.InvalidMoveError:
             raise MoveError(
                 f"Không hiểu '{text}' như nước đi cờ vua. "
                 f"Nước hợp lệ gần nhất: {self._suggestion(text)}. "
                 f"Ví dụ: {_POPULAR}."
             ) from None
+        # san() phải gọi TRƯỚC push: nó cần bàn cờ đứng ở vị trí trước nước đi.
+        canonical = self._board.san(move)
         self._board.push(move)
+        return canonical
 
     def _suggestion(self, san: str) -> str:
         """Vài nước hợp lệ gần nhất, ưu tiên nước cùng chữ cái đầu."""
@@ -183,13 +252,12 @@ class Position:
         pool = same or self.legal_sans()
         return ", ".join(pool[:6]) or "không có nước đi hợp lệ nào"
 
-    def _illegal_message(self, san: str, exc: chess.IllegalMoveError) -> str:
+    def _illegal_message(self, san: str) -> str:
         blocker = _castling_blocker(self._board, san)
         if blocker:
             return f"Nhập thành không hợp lệ: {blocker}"
-        reason = getattr(exc, "message", None) or str(exc) or "vi phạm luật cờ vua."
         note = _en_passant_note(self._board, san) + _castle_notation_note(san)
-        return f"'{san}' không hợp lệ: {reason}{note}"
+        return f"'{san}' không hợp lệ: {_explain_illegal(self._board, san)}{note}"
 
     def outcome(self) -> chess.Outcome | None:
         """Kết quả ván, hoặc None nếu ván còn đi.

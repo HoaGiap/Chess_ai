@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 
 import chess
 
@@ -16,6 +17,10 @@ COMING_SOON = frozenset(
     {"/hint", "/best", "/eval", "/analyze", "/puzzle", "/elo", "/style"}
 )
 
+_BANNER = (
+    "Chess_ai — cờ vua theo luật FIDE. Gõ /help để xem lệnh, /quit để thoát."
+)
+
 _HELP = """Lệnh có sẵn:
   /board    Vẽ lại bàn cờ
   /fen      In FEN hiện tại
@@ -25,7 +30,35 @@ _HELP = """Lệnh có sẵn:
   /draw     Kết thúc ván hòa (chưa có đối thủ để đàm phán ở #1)
   /help     Xem danh sách này
   /quit     Thoát
-Nước đi gõ kiểu SAN: e4, Nf3, O-O, exd5, e8=Q"""
+Nước đi gõ kiểu SAN: e4, Nf3, O-O, exd5, e8=Q
+Chế độ chơi:
+  --both    Tự đi cả hai bên. Phiên bản #1 CHƯA CÓ AI, nên đây là cách
+            chơi được duy nhất; mặc định (--side white) sẽ không ai đi hộ
+            bạn nước đầu tiên."""
+
+
+def _startup_note(human_color: chess.Color | None) -> str:
+    """Cảnh báo khi ván không thể chơi được vì chưa có đối thủ."""
+    if human_color is None:
+        return ""
+    return (
+        "Lưu ý: #1 chưa có AI nên không ai đi hộ phe còn lại. "
+        "Muốn chơi được, hãy khởi động lại với: python -m chessai.cli --both"
+    )
+
+
+def _force_utf8_stdout(stream) -> None:
+    """Ép stdout ra UTF-8 để bàn cờ vẽ được trên console cp1252/cp437.
+
+    Console Windows mặc định không mã hóa được ♔ và tiếng Việt có dấu.
+    """
+    reconfigure = getattr(stream, "reconfigure", None)
+    if reconfigure is None:
+        return
+    try:
+        reconfigure(encoding="utf-8", errors="replace")
+    except (ValueError, OSError, AttributeError):
+        pass
 
 
 class Quit(Exception):
@@ -133,9 +166,14 @@ def _dispatch(session: Session, raw: str) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
+    _force_utf8_stdout(sys.stdout)
     session = _build_session(_parse_args(argv))
-    print(f"Chess_ai — chế độ {session.mode}, AI ELO {session.elo} ({session.style})")
-    print("Gõ /help để xem lệnh. Kết thúc bằng /quit.\n")
+    print(_BANNER)
+    print(f"Chế độ {session.mode} · AI ELO {session.elo} ({session.style})")
+    note = _startup_note(session.human_color)
+    if note:
+        print(f"\n⚠ {note}")
+    print()
     print(_report(session))
     while True:
         try:
@@ -145,10 +183,10 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if not raw:
             continue
-        if raw == "/quit":
-            return 0
         try:
             print(_dispatch(session, raw))
+        except Quit:
+            return 0
         except MoveError as exc:
             print(f"Lỗi: {exc}")
 

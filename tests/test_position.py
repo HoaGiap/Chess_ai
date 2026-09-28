@@ -204,10 +204,13 @@ class TestCastlingErrors(unittest.TestCase):
         self.assertIn("quyền nhập thành", str(ctx.exception))
 
     def test_castling_through_attacked_square(self) -> None:
+        """Qf2 chiếu cả e1 lẫn f1 — e1 là ô vua nên phải được nêu đúng tên."""
         pos = Position("4k3/8/8/8/8/8/5q2/4K2R w K - 0 1")
         with self.assertRaises(MoveError) as ctx:
             pos.apply_san("O-O")
-        self.assertIn("bị tấn công", str(ctx.exception))
+        message = str(ctx.exception)
+        self.assertIn("bị chiếu", message)
+        self.assertIn("e1", message)
 
     def test_castling_notation_hint_for_king_move(self) -> None:
         pos = Position("4k3/8/8/8/8/8/8/R3K3 w Q - 0 1")

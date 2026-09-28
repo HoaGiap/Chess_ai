@@ -30,8 +30,9 @@ class Session:
         self.elo = elo
         self.style = style
         self.mode = mode
-        # Điểm móc cho #2: gán callback sau mỗi nước đi. Ở #1 là None.
-        self.on_move: Callable[[str], None] | None = None
+        # Điểm móc cho #2: gán callback sau mỗi nước đi, nhận (SAN chuẩn, phe đã đi).
+        # Ở #1 là None.
+        self.on_move: Callable[[str, Color], None] | None = None
         # (người thắng hoặc None, lý do bằng tiếng Việt) khi kết thúc bằng tuyên bố.
         self._declared: tuple[Color | None, str] | None = None
 
@@ -55,10 +56,17 @@ class Session:
             raise MoveError(f"Ván đã kết thúc: {self.result_text()}")
         if not self.is_human_turn():
             side = "Trắng" if self.position.side_to_move else "Đen"
-            raise MoveError(f"Chưa đến lượt bạn — đang là lượt của {side}.")
-        self.position.apply_san(san)
+            raise MoveError(
+                f"Chưa đến lượt bạn — đang là lượt của {side}. "
+                f"Phiên bản #1 chưa có AI, nên hãy chạy với --both để tự đi cả hai bên."
+            )
+        mover = self.position.side_to_move
+        canonical = self.position.apply_san(san)
         if self.on_move is not None:
-            self.on_move(san)
+            try:
+                self.on_move(canonical, mover)
+            except Exception as exc:  # hook của #2 không được làm sập ván
+                raise MoveError(f"Lỗi khi xử lý nước đi: {exc}") from exc
 
     def undo_turn(self) -> bool:
         """Lùi đúng một lượt. False nếu không đủ nước để lùi."""
@@ -90,8 +98,9 @@ class Session:
         return history[-1] if history else None
 
     def pgn(self) -> str:
-        """PGN đầy đủ kèm header và dấu kết quả, dùng để lưu file."""
+        """PGN đầy đủ kèm header và kết quả, dùng để lưu file."""
         game = chess.pgn.Game()
+        game.headers["Result"] = self._pgn_result()
         node: chess.pgn.GameNode = game
         replay = chess.Board(self.position.root_fen)
         for san in self.position.san_history():
@@ -99,6 +108,16 @@ class Session:
             replay.push(move)
             node = node.add_variation(move)
         return str(game)
+
+    def _pgn_result(self) -> str:
+        """Kết quả theo chuẩn PGN: '1-0', '0-1', '1/2-1/2' hoặc '*' nếu còn đi."""
+        if self._declared is not None:
+            winner = self._declared[0]
+            if winner is None:
+                return "1/2-1/2"
+            return "1-0" if winner else "0-1"
+        outcome = self.position.outcome()
+        return "*" if outcome is None else outcome.result()
 
     def movetext(self) -> str:
         """Chỉ phần nước đi, bỏ header PGN và dấu `*` — dùng để in trong REPL."""

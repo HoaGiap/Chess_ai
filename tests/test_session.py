@@ -91,7 +91,13 @@ class TestPgn(unittest.TestCase):
         s = Session(human_color=None)
         for san in ["f3", "e5", "g4", "Qh4"]:
             s.apply_san(san)
-        self.assertEqual(s.movetext(), "1. f3 e5 2. g4 Qh4#")
+        # Ván đã xong nên movetext kết thúc bằng kết quả, không phải dấu '*'.
+        self.assertEqual(s.movetext(), "1. f3 e5 2. g4 Qh4# 0-1")
+
+    def test_movetext_result_is_absent_while_playing(self) -> None:
+        s = Session(human_color=None)
+        s.apply_san("e4")
+        self.assertEqual(s.movetext(), "1. e4")
 
     def test_movetext_multi_move_numbering(self) -> None:
         s = Session(human_color=None)
@@ -147,15 +153,15 @@ class TestStatusLine(unittest.TestCase):
 class TestMoveHook(unittest.TestCase):
     def test_on_move_hook_called(self) -> None:
         s = Session(human_color=None)
-        seen: list[str] = []
-        s.on_move = seen.append
+        seen: list[tuple[str, chess.Color]] = []
+        s.on_move = lambda san, color: seen.append((san, color))
         s.apply_san("e4")
-        self.assertEqual(seen, ["e4"])
+        self.assertEqual(seen, [("e4", chess.WHITE)])
 
     def test_on_move_hook_not_called_on_error(self) -> None:
         s = Session(human_color=None)
-        seen: list[str] = []
-        s.on_move = seen.append
+        seen: list[tuple[str, chess.Color]] = []
+        s.on_move = lambda san, color: seen.append((san, color))
         with self.assertRaises(MoveError):
             s.apply_san("e5")
         self.assertEqual(seen, [])
