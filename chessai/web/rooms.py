@@ -105,8 +105,12 @@ class RoomView:
             setattr(self, ten, kw.get(ten))
 
     def as_dict(self) -> dict:
-        return {ten: getattr(self, ten) for ten in self.__slots__
-                if ten != "created_at"}
+        du = {ten: getattr(self, ten) for ten in self.__slots__
+              if ten != "created_at"}
+        # `status` là property nên không nằm trong __slots__ — phải thêm tay,
+        # nếu không trình duyệt không có gì để hiện trong danh sách phòng.
+        du["status"] = self.status
+        return du
 
     @property
     def status(self) -> str:
