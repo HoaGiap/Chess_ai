@@ -22,12 +22,20 @@
     </header>
     <div class="player" id="player-top">
       <span class="dot black"></span>
-      <div><strong>Đen</strong><small id="top-sub">—</small></div>
+      <div>
+        <strong>Đen</strong>
+        <small id="top-sub">—</small>
+        <small id="top-elo"></small>
+      </div>
       <span class="captured" id="top-captured"></span>
     </div>
     <div class="player" id="player-bottom">
       <span class="dot white"></span>
-      <div><strong>Trắng</strong><small id="bottom-sub">—</small></div>
+      <div>
+        <strong>Trắng</strong>
+        <small id="bottom-sub">—</small>
+        <small id="bottom-elo"></small>
+      </div>
       <span class="captured" id="bottom-captured"></span>
     </div>
     <p class="message" id="message"></p>
@@ -37,6 +45,21 @@
       <button id="flip">Lật bàn</button>
       <button id="pgn">Tải PGN</button>
       <button id="new" class="primary">Ván mới</button>
+    </div>
+    <div class="setup" id="setup" hidden>
+      <div class="setup-row">
+        <span class="setup-label">Bạn đánh phe</span>
+        <div class="seg" id="pick-color">
+          <button data-color="white" class="on">Trắng</button>
+          <button data-color="black">Đen</button>
+          <button data-color="both">Hai bên</button>
+        </div>
+      </div>
+      <div class="setup-row">
+        <span class="setup-label">Elo máy <b id="elo-value">1200</b></span>
+        <input type="range" id="elo" min="600" max="2400" step="100" value="1200">
+      </div>
+      <button id="start" class="primary">Bắt đầu</button>
     </div>
   </aside>
 </main>

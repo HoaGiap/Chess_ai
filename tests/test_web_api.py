@@ -16,7 +16,7 @@ import mimetypes
 import re
 import unittest
 
-from chessai.web.app import STATIC_DIR, MoveRequest, create_app
+from chessai.web.app import STATIC_DIR, MoveRequest, NewGameRequest, create_app
 from chessai.web.games import GameStore
 from chessai.web.schema import GameState, MoveOption
 

@@ -125,3 +125,31 @@ body {
   .panel { width: 100%; }
   .moves { max-height: 120px; }
 }
+
+/* ---- #3B: hộp chọn phe + Elo, và trạng thái "AI đang nghĩ" ---- */
+.setup {
+  margin-top: 12px; padding: 10px;
+  border: 1px solid var(--border); border-radius: 6px;
+  display: grid; gap: 8px;
+}
+.setup[hidden] { display: none; }
+.setup-row { display: grid; gap: 4px; }
+.setup-label { font-size: 12px; color: var(--muted); }
+.setup-label b { color: var(--fg); }
+.seg { display: flex; gap: 4px; }
+.seg button {
+  flex: 1; padding: 5px; font-size: 12px;
+  background: var(--btn); color: var(--btn-fg);
+  border: 1px solid var(--btn-border); border-radius: 4px; cursor: pointer;
+}
+.seg button.on { background: #4a7dd6; border-color: #4a7dd6; color: #fff; }
+#elo { width: 100%; accent-color: #4a7dd6; }
+.player small + small { opacity: .85; }
+.thinking::after { content: " …"; animation: nhapnhay 1s steps(3) infinite; display: inline-block; }
+@keyframes nhapnhay { 0% { opacity: .2; } 50% { opacity: 1; } 100% { opacity: .2; } }
+.squares.locked { cursor: default; }
+.squares.locked .piece { filter: saturate(.85); }
+@media (prefers-reduced-motion: reduce) {
+  .thinking::after { animation: none; }
+  .piece { transition: none; }
+}

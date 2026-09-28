@@ -20,6 +20,11 @@ const el = {
   topCaptured: document.getElementById("top-captured"),
   bottomCaptured: document.getElementById("bottom-captured"),
   undo: document.getElementById("undo"),
+  topElo: document.getElementById("top-elo"),
+  bottomElo: document.getElementById("bottom-elo"),
+  setup: document.getElementById("setup"),
+  elo: document.getElementById("elo"),
+  eloValue: document.getElementById("elo-value"),
 };
 
 let state = null;
@@ -27,6 +32,9 @@ let orientation = "w";   // "w" = quân Trắng ở dưới
 let selected = null;     // ô nguồn đang chọn
 let promoting = null;    // { sanByLetter } đang chờ chọn quân phong cấp
 let busy = false;        // đang chờ máy chủ trả lời
+let aiThinking = false;  // #3B: máy đang tìm nước
+let pollTimer = null;    // #3B: hẹn giờ hỏi lại
+const picking = { color: "white", elo: 1200 };  // #3B: lựa chọn ở hộp thoại
 
 // Khoá bàn và nút trong lúc đang bay, để không gửi hai nước cùng lúc —
 // hai response tới lệch thứ tự thì trình duyệt lệch máy chủ vĩnh viễn.
@@ -225,6 +233,21 @@ function paintPanel() {
   }
   el.moves.scrollTop = el.moves.scrollHeight;
   el.undo.disabled = !state.can_undo;
+  // Nhãn Elo và "AI đang nghĩ" phải theo PHE MÁY, không theo phe đang đi:
+  // hàng trên luôn là Đen, hàng dưới luôn là Trắng, còn máy có thể là phe
+  // nào tuỳ người chơi chọn. Trước đây gắn theo `turn` nên khi người chơi
+  // chọn phe Đen, nhãn hiện nhầm sang phe Trắng.
+  const coMay = state.human_color !== null;
+  const mayLaPheDen = state.human_color === "white";   // người chơi trắng → máy đen
+  const mayDangNghi = aiThinking;
+  const nhanhMay = mayDangNghi ? "AI đang nghĩ" : "Elo " + state.elo;
+  el.topElo.textContent = coMay && mayLaPheDen ? nhanhMay : "";
+  el.bottomElo.textContent = coMay && !mayLaPheDen ? nhanhMay : "";
+  el.top.classList.toggle("thinking", coMay && mayLaPheDen && mayDangNghi);
+  el.bottom.classList.toggle("thinking", coMay && !mayLaPheDen && mayDangNghi);
+  el.squares.classList.toggle(
+    "locked", coMay && (state.over || state.turn !== state.human_color),
+  );
   if (state.over) {
     el.message.textContent = state.result_text;
     el.message.classList.remove("error");
@@ -232,13 +255,48 @@ function paintPanel() {
 }
 
 function apply(next) {
+  // Chỉ khi là VÁN MỚI mới tự đặt hướng bàn theo phe người chơi. Nếu đặt mỗi
+  // nước đi thì nút "Lật bàn" sẽ bị ghi đè ngay lần sau — mà người chơi cần
+  // xem ngược lại bàn khi đấu máy.
+  const doiVan = state !== null && state.game_id !== next.game_id;
   state = next;
+  aiThinking = next.thinking;
   selected = null;
   hidePicker();
+  if (doiVan) {
+    const wanted = next.human_color === "black" ? "b" : "w";
+    if (wanted !== orientation) {
+      orientation = wanted;
+      buildSquares();
+    }
+  }
   const cells = boardFromFen(state.fen);
   paintPieces(cells);
   paintBoard(cells);
   paintPanel();
+  if (aiThinking) pollAi(); else stopPolling();
+  showInUrl(state.game_id);
+}
+
+// ---- #3B: hỏi lại cho tới khi máy đi xong ------------------------------
+// Máy tìm nước ở thread nền, nên POST /move trả về ngay. Trình duyệt hỏi
+// GET cho tới khi `thinking` là false.
+
+function stopPolling() {
+  if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+}
+
+function pollAi() {
+  stopPolling();
+  pollTimer = setTimeout(async () => {
+    pollTimer = null;
+    try {
+      apply(await api(`/api/game/${state.game_id}`, "GET"));
+    } catch (error) {
+      stopPolling();
+      say(error.message, true);
+    }
+  }, 300);
 }
 
 function say(text, isError = false) {
@@ -298,6 +356,12 @@ async function send(san) {
 el.squares.addEventListener("click", (event) => {
   const sq = event.target.closest(".sq");
   if (!sq || !state || state.over || busy) return;
+  // Review Focus 5: bấm vào quân của máy thì không được hiện chấm tròn nào,
+  // cũng không được gửi gì lên máy chủ.
+  if (state.human_color !== null && state.turn !== state.human_color) {
+    say("Đến lượt máy.");
+    return;
+  }
   const name = sq.dataset.sq;
 
   // Đang chờ chọn quân phong cấp thì bấm ô nào cũng chỉ huỷ, không đi nước nào.
@@ -366,9 +430,15 @@ document.getElementById("flip").addEventListener("click", () => {
 
 // Ưu tiên route /new của ván đang chơi (nó có tồn tại vì `new_game` giữ cấu
 // hình Session cho #3B); chỉ tạo ván mới khi chưa có ván nào.
-document.getElementById("new").addEventListener("click", () => withState(
-  (s) => api(`/api/game/${s.game_id}/new`, "POST"),
-));
+document.getElementById("new").addEventListener("click", () => {
+  // Đang đấu máy thì giữ cấu hình, chỉ bắt đầu ván mới. Chưa đấu thì hỏi
+  // phe và Elo trước — không có AI thì các lựa chọn đó chẳng dùng để làm gì.
+  if (state && state.human_color !== null) {
+    withState((s) => api(`/api/game/${s.game_id}/new`, "POST"));
+    return;
+  }
+  el.setup.hidden = false;
+});
 
 document.getElementById("pgn").addEventListener("click", () => withState(async (s) => {
   const { pgn } = await api(`/api/game/${s.game_id}/pgn`, "GET");
@@ -380,6 +450,38 @@ document.getElementById("pgn").addEventListener("click", () => withState(async (
   URL.revokeObjectURL(url);
   return s;   // không đổi bàn cờ
 }));
+
+document.getElementById("pick-color").addEventListener("click", (event) => {
+  const nut = event.target.closest("button[data-color]");
+  if (!nut) return;
+  for (const b of document.querySelectorAll("#pick-color button")) {
+    b.classList.toggle("on", b === nut);
+  }
+  picking.color = nut.dataset.color;
+});
+
+el.elo.addEventListener("input", () => {
+  picking.elo = Number(el.elo.value);
+  el.eloValue.textContent = String(picking.elo);
+});
+
+document.getElementById("start").addEventListener("click", async () => {
+  lockUi(true);
+  try {
+    const human = picking.color === "both" ? null : picking.color;
+    const next = await api("/api/game", "POST", {
+      human_color: human,
+      elo: picking.elo,
+    });
+    el.setup.hidden = true;
+    say("");
+    apply(next);
+  } catch (error) {
+    say(error.message, true);
+  } finally {
+    lockUi(false);
+  }
+});
 
 const themeButton = document.getElementById("theme");
 function setTheme(theme) {
@@ -411,9 +513,7 @@ async function loadOrCreateGame() {
       say("Ván trong liên kết không còn trên máy chủ — đã mở ván mới.");
     }
   }
-  const created = await api("/api/game", "POST");
-  showInUrl(created.game_id);
-  return created;
+  return await api("/api/game", "POST");
 }
 
 buildSquares();
