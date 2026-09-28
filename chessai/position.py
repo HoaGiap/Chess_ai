@@ -85,9 +85,11 @@ def _castling_blocker(board: chess.Board, san: str) -> str:
     for raw in empty_sqs:
         sq = _shift(raw, turn)
         piece = board.piece_at(sq)
-        if piece is not None and piece.color == turn:
+        if piece is not None:
+            # Cả quân địch cũng chặn đường nhập thành, không chỉ quân của bạn.
+            whose = "của bạn" if piece.color == turn else "của đối thủ"
             name = _PIECE_VN[piece.piece_type]
-            return f"ô {chess.square_name(sq)} chưa trống — {name} của bạn đang ở đó."
+            return f"ô {chess.square_name(sq)} chưa trống — {name} {whose} đang ở đó."
 
     rook_at = _shift(rook_sq, turn)
     piece = board.piece_at(rook_at)
@@ -116,53 +118,83 @@ def _castling_blocker(board: chess.Board, san: str) -> str:
 
 
 def _en_passant_note(board: chess.Board, san: str) -> str:
-    """Gợi ý khi người chơi thử bắt tốt qua đường ở thế không cho phép."""
-    text = san.replace(" ", "").lower()
-    if len(text) < 4 or text[1] != "x":
+    """Gợi ý khi người chơi thử bắt tốt qua đường ở thế không cho phép.
+
+    Bắt tốt qua đường trong SAN LUÔN bắt đầu bằng cột của tốt (chữ thường
+    a–h) rồi tới dấu `x`, ví dụ `exd6`. Phải giữ nguyên phân biệt HOA/thường:
+    `.lower()` biến `Qxd6` thành `qxd6` và gán nhầm gợi ý này cho mọi quân.
+    """
+    raw = san.strip()
+    if len(raw) < 4 or raw[0] not in "abcdefgh" or raw[1] != "x":
         return ""
     landing = "6" if board.turn == chess.WHITE else "3"
-    if text[-1] != landing or board.ep_square is not None:
+    if raw[-1] != landing or board.ep_square is not None:
         return ""
     return " Bắt tốt qua đường chỉ được ngay sau khi đối thủ vừa đi tốt 2 ô bằng một nước."
 
 
-def _target_of(san: str) -> tuple[int, int | None]:
-    """(loại quân, ô đích) suy ra từ SAN. Ô đích là None nếu không đọc được.
+def _target_of(san: str) -> tuple[int, int | None, bool]:
+    """(loại quân, ô đích, có phải nước bắt không) suy ra từ SAN.
 
-    Không dùng `Board.parse_san` vì nước đang bị từ chối — thư viện ném lỗi.
+    Ô đích là None nếu không đọc được. Không dùng `Board.parse_san` vì nước
+    đang bị từ chối — thư viện ném lỗi.
     """
     text = san.replace(" ", "")
     for suffix in ("+", "#", "!", "?"):
         text = text.replace(suffix, "")
+    is_capture = "x" in text
     text = text.split("=")[0]
     if not text:
-        return chess.PAWN, None
+        return chess.PAWN, None, is_capture
     # Phải phân biệt HOA/thường: "Bxd3" là tượng, còn "bxd3" là tốt từ cột b.
     head = text[:1]
     piece = _PIECE_LETTERS[head] if head in _PIECE_LETTERS else chess.PAWN
     try:
-        return piece, chess.parse_square(text[-2:].lower())
+        return piece, chess.parse_square(text[-2:].lower()), is_capture
     except ValueError:
-        return piece, None
+        return piece, None, is_capture
 
 
 def _explain_illegal(board: chess.Board, san: str) -> str:
     """Giải thích tiếng Việt vì sao nước đi không hợp lệ.
 
-    Ưu tiên các nguyên nhân hay gặp, thay vì lộ chuỗi của thư viện kèm FEN.
+    LƯU Ý LUẬT: chỉ VUA bị cấm đi vào ô do đối thủ kiểm soát. Xe, mã, tượng,
+    hậu, tốt đều được phép đi vào ô bị tấn công (thí quân, đổi quân, phòng thủ),
+    nên không được dùng luật đó cho các quân khác.
     """
-    piece_type, dest = _target_of(san)
+    piece_type, dest, is_capture = _target_of(san)
+
     if dest is not None:
         name = chess.square_name(dest)
         occupant = board.piece_at(dest)
         if occupant is not None and occupant.color == board.turn:
             return f"ô {name} đang có {_PIECE_VN[occupant.piece_type]} CỦA BẠN — không bắt được quân của chính mình."
         if occupant is not None and occupant.piece_type == chess.KING:
-            return f"không được bắt vua của đối thủ."
-        if board.is_attacked_by(not board.turn, dest):
-            return f"ô {name} đang bị chiếu — không được đi vào."
-        if piece_type == chess.PAWN and chess.square_rank(dest) in (0, 7):
+            return "không được bắt vua của đối thủ."
+        if occupant is not None and piece_type == chess.PAWN and not is_capture:
+            return (
+                f"ô {name} có {_PIECE_VN[occupant.piece_type]} đối thủ — "
+                f"tốt không bắt thẳng phía trước, phải đi chéo để bắt."
+            )
+
+    if board.is_check() and piece_type != chess.KING:
+        return (
+            "vua của bạn đang bị chiếu — phải di chuyển vua, che chắn, "
+            "hoặc bắt quân đang chiếu."
+        )
+
+    if dest is not None:
+        if piece_type == chess.KING and board.is_attacked_by(not board.turn, dest):
+            return f"ô {name} đang bị chiếu — vua không được đi vào ô bị đối thủ kiểm soát."
+        if board.piece_at(dest) is None and is_capture:
+            return f"ô {name} trống — không có quân để bắt."
+        if (
+            piece_type == chess.PAWN
+            and chess.square_rank(dest) in (0, 7)
+            and "=" not in san
+        ):
             return f"tốt tới {name} phải được phong cấp, ví dụ: {san}=Q."
+
     if piece_type != chess.PAWN and not any(
         board.pieces(piece_type, color) for color in (chess.WHITE, chess.BLACK)
     ):

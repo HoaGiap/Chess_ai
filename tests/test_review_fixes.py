@@ -1,4 +1,4 @@
-"""Test cho cac fix sau final review. Moi fix co test RED truoc khi sua code."""
+﻿"""Test cho cac fix sau final review. Moi fix co test RED truoc khi sua code."""
 
 import io
 import os
@@ -323,3 +323,95 @@ class TestImportant8_MoveHookIsUsableBySubProject2(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestBug1_OnlyKingIsForbiddenFromAttackedSquares(unittest.TestCase):
+    """Chỉ VUA bị cấm đi vào ô bị chiếu. Xe/ma/tuong/hau/tot deu duoc."""
+
+    def test_rook_capturing_empty_attacked_square(self) -> None:
+        """"Rxd5" bi tu choi vi d5 TRONG — khong phai vi d5 bi chieu."""
+        message = err("4k3/8/2b5/8/8/8/8/R3K3 w - - 0 1", "Rxd5")
+        self.assertNotIn("bị chiếu", message)
+        self.assertIn("d5", message)
+        self.assertIn("trống", message)
+
+    def test_pawn_blocked_by_enemy_pawn(self) -> None:
+        """Tot khong bat duoc thang phia truoc."""
+        message = err("4k3/8/8/3b4/4p3/4P3/8/4K3 w - - 0 1", "e4")
+        self.assertNotIn("bị chiếu", message)
+        self.assertIn("e4", message)
+        self.assertIn("phía trước", message)
+
+    def test_king_into_attacked_square_still_explained(self) -> None:
+        message = err(IN_CHECK, "Kd2")
+        self.assertIn("bị chiếu", message)
+        self.assertIn("d2", message)
+
+    def test_rook_may_legally_move_to_an_attacked_square(self) -> None:
+        """Luật cờ vua: chỉ VUA bị cấm đi vào ô bị chiếu. Xe thì được.
+
+        Xe d1 lên d5 là nước hợp lệ dù Tượng c6 đang nhắm d5.
+        """
+        pos = Position("4k3/8/2b5/8/8/8/8/3RK3 w - - 0 1")
+        pos.apply_san("Rd5")
+        self.assertEqual(pos.board.piece_at(chess.D5).piece_type, chess.ROOK)
+
+
+class TestBug2_1_CastlingBlockedByEnemyPiece(unittest.TestCase):
+    def test_enemy_piece_on_castling_path_named(self) -> None:
+        message = err("4k3/8/8/8/8/8/8/R2bK2R w KQ - 0 1", "O-O-O")
+        self.assertIn("d1", message)
+        self.assertIn("đối thủ", message)
+
+    def test_own_piece_still_says_cua_ban(self) -> None:
+        message = err("4k3/8/8/8/8/8/8/R3KB1R w KQ - 0 1", "O-O")
+        self.assertIn("f1", message)
+        self.assertIn("của bạn", message)
+
+
+class TestBug2_2_EnPassantHintOnlyForPawns(unittest.TestCase):
+    QUEEN_ONLY = "4k3/8/8/8/8/8/8/4K2Q w - - 0 1"
+
+    def test_queen_capture_gets_no_en_passant_hint(self) -> None:
+        message = err(self.QUEEN_ONLY, "Qxd6")
+        self.assertNotIn("Bắt tốt qua đường", message)
+
+    def test_rook_capture_gets_no_en_passant_hint(self) -> None:
+        message = err("4k3/8/8/8/8/8/8/4KR2 w - - 0 1", "Rxd6")
+        self.assertNotIn("Bắt tốt qua đường", message)
+
+    def test_bishop_capture_gets_no_en_passant_hint(self) -> None:
+        message = err("4k3/8/8/8/8/8/8/2B1K3 w - - 0 1", "Bxd6")
+        self.assertNotIn("Bắt tốt qua đường", message)
+
+    def test_pawn_capture_still_gets_en_passant_hint(self) -> None:
+        message = err("4k3/8/8/3pP3/8/8/8/4K3 w - - 0 1", "exd6")
+        self.assertIn("Bắt tốt qua đường", message)
+
+    def test_pawn_capture_on_wrong_rank_gets_no_hint(self) -> None:
+        message = err(chess.STARTING_FEN, "exd3")
+        self.assertNotIn("Bắt tốt qua đường", message)
+
+
+class TestBug2_3_UnresolvedCheckExplained(unittest.TestCase):
+    IN_CHECK_BY_BISHOP = "4k3/8/8/8/8/8/3b4/4K1N1 w - - 0 1"
+
+    def test_moving_other_piece_while_in_check(self) -> None:
+        message = err(self.IN_CHECK_BY_BISHOP, "Nf3")
+        self.assertIn("đang bị chiếu", message)
+        self.assertIn("che chắn", message)
+
+    def test_own_piece_reason_still_wins(self) -> None:
+        # Vua e1 đang bị xe e8 chiếu, nhưng lý do cụ thể hơn là a2 có tốt CỦA BẠN.
+        message = err("4r3/8/8/8/8/8/P7/R3K3 w - - 0 1", "Rxa2")
+        self.assertIn("CỦA BẠN", message)
+
+
+class TestBug3_UndoRedrawsBoard(unittest.TestCase):
+    def test_undo_returns_the_board(self) -> None:
+        s = Session(human_color=None)
+        s.apply_san("e4")
+        out = cli._dispatch(s, "/undo")
+        self.assertIn("Đã lùi", out)
+        self.assertIn("♔", out)
+        self.assertIn("+---", out)

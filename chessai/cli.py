@@ -121,7 +121,8 @@ def _cmd_pgn(session: Session, arg: str) -> str:
 def _cmd_undo(session: Session, arg: str) -> str:
     if not session.undo_turn():
         return "Không có nước nào để lùi."
-    return "Đã lùi 1 lượt."
+    # Vẽ lại bàn cờ: lùi xong mà không thấy bàn cờ thì phải gõ thêm /board.
+    return "Đã lùi 1 lượt.\n" + _report(session)
 
 
 def _cmd_resign(session: Session, arg: str) -> str:
