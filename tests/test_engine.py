@@ -256,8 +256,11 @@ class TestThink(unittest.TestCase):
         rng = random.Random(20260928)
         board = chess.Board()
         for _ in range(16):
-            hop = rng.choice(list(board.legal_moves))
-            board.push(hop)
+            # Máy ở Elo 600 có thể chiếu tướng hoặc bế tắc trước khi hết 16
+            # nước, nên phải dừng khi ván xong thay vì giả định còn nước đi.
+            if board.is_game_over():
+                break
+            board.push(rng.choice(list(board.legal_moves)))
             nuoc = engine.think(board, 600, 0.0)
             if nuoc is None:
                 break
@@ -269,6 +272,8 @@ class TestThink(unittest.TestCase):
         rng = random.Random(1)
         board = chess.Board()
         for _ in range(6):
+            if board.is_game_over():
+                break
             board.push(rng.choice(list(board.legal_moves)))
             nuoc = engine.think(board, 2400, 0.0)
             if nuoc is None:

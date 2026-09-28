@@ -33,6 +33,9 @@ class Session:
         # Điểm móc cho #2: gán callback sau mỗi nước đi, nhận (SAN chuẩn, phe đã đi).
         # Ở #1 là None.
         self.on_move: Callable[[str, Color], None] | None = None
+        # #3B: máy đang suy nghĩ. Cờ hiển thị, KHÔNG phải luật — nên đọc/ghi
+        # không cần khoá ván.
+        self.thinking = False
         # (người thắng hoặc None, lý do bằng tiếng Việt) khi kết thúc bằng tuyên bố.
         self._declared: tuple[Color | None, str] | None = None
 
@@ -45,6 +48,7 @@ class Session:
         """
         self.position = Position()
         self._declared = None
+        self.thinking = False
 
     def is_human_turn(self) -> bool:
         if self.human_color is None:
@@ -68,7 +72,7 @@ class Session:
             side = "Trắng" if self.position.side_to_move else "Đen"
             raise MoveError(
                 f"Chưa đến lượt bạn — đang là lượt của {side}. "
-                f"Phiên bản #1 chưa có AI, nên hãy chạy với --both để tự đi cả hai bên."
+                f"Muốn tự đi cả hai bên thì chạy với --both."
             )
         mover = self.position.side_to_move
         canonical = self.position.apply_san(san)

@@ -100,15 +100,27 @@ class GameStore:
         self._order: list[str] = []
         self._guard = threading.Lock()
 
-    def create(self, human_color: chess.Color | None) -> str:
+    def create(
+        self,
+        human_color: chess.Color | None,
+        elo: int = 1500,
+        mode: str = "play",
+    ) -> str:
         game_id = secrets.token_urlsafe(16)[:_ID_LENGTH]
         with self._guard:
-            self._games[game_id] = Session(human_color=human_color)
+            self._games[game_id] = Session(
+                human_color=human_color, elo=elo, mode=mode
+            )
             self._locks[game_id] = threading.Lock()
             self._order.append(game_id)
             while len(self._order) > self.capacity:
                 self._drop(self._order[0])
         return game_id
+
+    def set_thinking(self, game_id: str, value: bool) -> None:
+        """Cờ 'AI đang nghĩ'. KHÔNG lấy khoá: đây là cờ hiển thị, không phải
+        luật — lấy khoá sẽ khiến GET phải chờ hết lúc máy đang tìm nước."""
+        self._require(game_id).thinking = value
 
     def forget(self, game_id: str) -> None:
         """Xoá ván khỏi bộ nhớ — mô phỏng hành vi mất ván khi máy chủ restart."""
@@ -158,6 +170,13 @@ class GameStore:
             last_to=last_to,
             check=board.is_check(),
             check_square=check_square,
+            thinking=bool(session.thinking),
+            elo=session.elo,
+            human_color=(
+                None
+                if session.human_color is None
+                else ("white" if session.human_color else "black")
+            ),
             over=session.is_game_over(),
             result_text=session.result_text(),
             moves=session.position.san_history(),
@@ -192,6 +211,48 @@ class GameStore:
     def pgn_text(self, game_id: str) -> str:
         with self._lock(game_id):
             return self._require(game_id).pgn()
+
+    def fen_of(self, game_id: str) -> str:
+        """FEN hiện tại, lấy khoá. Dùng để AI chụp lại thế cờ lúc bắt đầu tìm."""
+        with self._lock(game_id):
+            return self._require(game_id).position.board.fen()
+
+    def fen_now(self, game_id: str) -> str:
+        """FEN hiện tại, KHÔNG lấy khoá.
+
+        Chỉ dùng khi người gọi **đã giữ khoá ván** (tức là đang ở trong
+        `Session.on_move`, mà `on_move` được `submit` gọi khi đang khoá).
+        Đọc ở đây là cách duy nhất chụp được đúng thế cờ "vừa đi nước": nếu để
+        thread AI tự đọc sau, nó có thể đọc trễ — sau khi người chơi đã bấm
+        "Ván mới" — và cờ FEN sẽ khớp với ván mới, nên nước cũ vẫn được áp.
+        """
+        return self._require(game_id).position.board.fen()
+
+    def commit_ai_move(
+        self, game_id: str, expected_fen: str, move: chess.Move
+    ) -> bool:
+        """Áp nước AI **chỉ khi** bàn cờ vẫn đúng như lúc bắt đầu tìm.
+
+        Trả False nếu ván đã đổi — người chơi bấm "Ván mới" / "Lùi" trong lúc
+        AI đang nghĩ. So FEN và áp nước nằm chung MỘT lần giữ khoá nên không
+        thể có khe hở chen vào giữa.
+        """
+        with self._lock(game_id):
+            session = self._require(game_id)
+            board = session.position.board
+            if board.fen() != expected_fen:
+                return False
+            if session.is_game_over():
+                return False
+            # Máy chỉ được đi khi CHƯA tới lượt người. Đây là bất biến thật, và
+            # cũng là lớp bảo vệ thứ hai nếu có đường nào đổi cờ mà lọt.
+            if session.human_color is not None and session.is_human_turn():
+                return False
+            # Gọi thẳng `position.apply_san` chứ không `Session.apply_san`:
+            # cái sau kiểm is_human_turn() (sẽ từ chối nước của máy) và lại bắn
+            # on_move một lần nữa. Máy cứng không phải "người", và không cần hook.
+            session.position.apply_san(board.san(move))
+            return True
 
     def _drop(self, game_id: str) -> None:
         """Bỏ một ván khỏi bộ nhớ. Phải giữ `_guard` (không reentrant)."""

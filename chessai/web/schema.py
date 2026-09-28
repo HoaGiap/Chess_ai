@@ -32,6 +32,11 @@ class GameState(BaseModel):
     # Ô vua đang bị chiếu, máy chủ tính sẵn — trình duyệt không tự suy ra,
     # vì "vua nào bị chiếu" là luật cờ vua chứ không phải trình bày.
     check_square: str | None
+    # true khi AI đang tìm nước — trình duyệt hỏi lại cho tới khi hết.
+    thinking: bool
+    # Elo của đối thủ, và phe người chơi (None = chơi hai bên, không có AI).
+    elo: int
+    human_color: str | None
     over: bool
     result_text: str
     moves: list[str]

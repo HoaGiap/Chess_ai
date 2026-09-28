@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import mimetypes
+from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import AsyncIterator, Literal
 
 from fastapi import FastAPI
 from fastapi.encoders import jsonable_encoder
@@ -12,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from ..position import MoveError
+from .ai import AIController
 from .games import GameNotFound, GameStore
 
 # Ghi charset UTF-8 tường minh cho file tĩnh. `mimetypes` mặc định trả
@@ -27,6 +30,11 @@ STATIC_DIR = Path(__file__).parent / "static"
 
 class MoveRequest(BaseModel):
     san: str
+
+
+class NewGameRequest(BaseModel):
+    human_color: Literal["white", "black", None] = None
+    elo: int = 1500
 
 
 def _guard(action, *args) -> JSONResponse:
@@ -47,16 +55,29 @@ def _guard(action, *args) -> JSONResponse:
 
 
 def create_app(store: GameStore | None = None) -> FastAPI:
-    app = FastAPI(title="Chess_ai web", docs_url=None, redoc_url=None)
     games = store if store is not None else GameStore()
+    ai = AIController(games)
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        yield
+        ai.shutdown()
+
+    app = FastAPI(
+        title="Chess_ai web", docs_url=None, redoc_url=None, lifespan=lifespan
+    )
 
     @app.get("/")
     def index() -> FileResponse:
         return FileResponse(STATIC_DIR / "index.html")
 
     @app.post("/api/game")
-    def create_game() -> JSONResponse:
-        return _guard(games.snapshot, games.create(None))
+    def create_game(payload: NewGameRequest | None = None) -> JSONResponse:
+        data = payload if payload is not None else NewGameRequest()
+        color = None if data.human_color is None else (data.human_color == "white")
+        game_id = games.create(color, elo=max(600, min(2400, data.elo)))
+        ai.attach(game_id)
+        return _guard(games.snapshot, game_id)
 
     @app.get("/api/game/{game_id}")
     def read_game(game_id: str) -> JSONResponse:
@@ -68,10 +89,13 @@ def create_app(store: GameStore | None = None) -> FastAPI:
 
     @app.post("/api/game/{game_id}/undo")
     def undo(game_id: str) -> JSONResponse:
+        # Hủy trước: nếu AI đang nghĩ, kết quả của nó đã lỗi thời.
+        ai.cancel(game_id)
         return _guard(games.undo, game_id)
 
     @app.post("/api/game/{game_id}/new")
     def new_game(game_id: str) -> JSONResponse:
+        ai.cancel(game_id)
         return _guard(games.new_game, game_id)
 
     @app.get("/api/game/{game_id}/pgn")
