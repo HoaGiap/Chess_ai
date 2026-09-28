@@ -393,9 +393,32 @@ const savedTheme = localStorage.getItem("chessai-theme");
 if (savedTheme) setTheme(savedTheme);
 else if (window.matchMedia("(prefers-color-scheme: light)").matches) setTheme("light");
 
+// game_id nằm trong query string: http://.../?g=xxxx
+// Nhờ vậy F5 không mất ván, và copy link sang máy khác cũng vào đúng ván.
+function showInUrl(gameId) {
+  const url = new URL(location.href);
+  url.searchParams.set("g", gameId);
+  history.replaceState(null, "", url);
+}
+
+async function loadOrCreateGame() {
+  const fromUrl = new URLSearchParams(location.search).get("g");
+  if (fromUrl) {
+    try {
+      return await api(`/api/game/${encodeURIComponent(fromUrl)}`, "GET");
+    } catch (error) {
+      // Máy chủ khởi động lại là mất ván — nói rõ rồi mở ván mới.
+      say("Ván trong liên kết không còn trên máy chủ — đã mở ván mới.");
+    }
+  }
+  const created = await api("/api/game", "POST");
+  showInUrl(created.game_id);
+  return created;
+}
+
 buildSquares();
 try {
-  apply(await api("/api/game", "POST"));
+  apply(await loadOrCreateGame());
 } catch (error) {
   say(error.message, true);
 }
