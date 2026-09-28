@@ -130,18 +130,6 @@ class TestPositionTables(unittest.TestCase):
         goc = chess.Board("4k3/8/8/8/8/8/8/Q3K3 w - - 0 1")
         self.assertGreater(engine.evaluate(giua), engine.evaluate(goc))
 
-    def test_min_material_tinh_dung_phe(self) -> None:
-        """Hai phe bất đồng lượng quân: lấy số của phe ít hơn, vua không tính."""
-        board = chess.Board("4k3/8/8/8/8/8/4R3/p3K3 w - - 0 1")   # trắng R, đen P
-        self.assertEqual(
-            engine.min_material(board),
-            min(engine.VALUES[chess.PAWN], engine.VALUES[chess.ROOK]),
-        )
-
-    def test_min_material_bang_khong_khi_mot_phe_trong(self) -> None:
-        board = chess.Board("4k3/8/8/8/8/8/8/3QK3 w - - 0 1")
-        self.assertEqual(engine.min_material(board), 0)
-
     def test_phase_giam_dan_theo_so_quan(self) -> None:
         dau = chess.Board(chess.STARTING_FEN)
         cuoi = chess.Board("4k3/8/8/8/8/8/8/4K3 w - - 0 1")
@@ -249,8 +237,9 @@ class TestThink(unittest.TestCase):
         """Review Focus 4: cho may choi yeu bang cach chon nuoc te; bang cach
         tra nuoc bat hop le thi mat ca van.
 
-        Dòng cờ do máy tự sinh (random có gieo cho xác định), không viết tay —
-        xem `test_dang_bi_chieu_thi_phai_tra_lai` để biết vì sao.
+        Cả RNG của người chơi lẫn RNG truyền vào `think` đều có gieo, nên ván
+        này tái lập được: hỏng thì chạy lại là ra y hệt. Trước đây `think` dùng
+        `random` toàn cục, không gieo được — ván hỏng không tái lập.
         """
         import random
         rng = random.Random(20260928)
@@ -261,7 +250,7 @@ class TestThink(unittest.TestCase):
             if board.is_game_over():
                 break
             board.push(rng.choice(list(board.legal_moves)))
-            nuoc = engine.think(board, 600, 0.0)
+            nuoc = engine.think(board, 600, 0.0, rng=rng)
             if nuoc is None:
                 break
             self.assertIn(nuoc, list(board.legal_moves), board.fen())
@@ -275,7 +264,7 @@ class TestThink(unittest.TestCase):
             if board.is_game_over():
                 break
             board.push(rng.choice(list(board.legal_moves)))
-            nuoc = engine.think(board, 2400, 0.0)
+            nuoc = engine.think(board, 2400, 0.0, rng=rng)
             if nuoc is None:
                 break
             self.assertIn(nuoc, list(board.legal_moves), board.fen())
@@ -293,7 +282,10 @@ class TestThink(unittest.TestCase):
         )
         bat_dau = _time.monotonic()
         engine.think(board, 2400, 0.0)
-        self.assertLess(_time.monotonic() - bat_dau, 9.0 * 2)
+        # Trần của Elo 2400 là 9.0s. Cho phép hơn 20% vì deadline được kiểm ở
+        # đỉnh mỗi node, một node cuối có thể trôi — nhưng KHÔNG cho phép gấp đôi:
+        # con số 2x khiến test này không bao giờ đỏ.
+        self.assertLess(_time.monotonic() - bat_dau, 9.0 * 1.2)
 
     def test_thoi_gian_toi_thieu_duoc_chan(self) -> None:
         import time as _time

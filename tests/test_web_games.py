@@ -404,6 +404,92 @@ class TestConcurrency(unittest.TestCase):
             thread.join()
         self.assertEqual([str(e) for e in errors], [])
 
+class TestBaoVeAI(unittest.TestCase):
+    """Test TRỰC TIẾP cho lớp bảo vệ của đặc tả §4.1.
+
+    Trước đây các hàm này chỉ được cover gián tiếp qua AIController, mà
+    controller dùng engine giả — nên chính lớp chặn nước sai thì chưa từng
+    được gọi với nước thật.
+    """
+
+    def _game(self, fen: str | None = None) -> tuple[GameStore, str]:
+        store = GameStore()
+        game_id = store.create(chess.WHITE)
+        if fen is not None:
+            store.set_fen(game_id, fen)
+        return store, game_id
+
+    def test_fen_khop_thi_ap_duoc(self) -> None:
+        store, game_id = self._game()
+        store.submit(game_id, "e4")
+        fen = store.fen_of(game_id)
+        nuoc = chess.Move.from_uci("e7e5")
+        self.assertTrue(store.commit_ai_move(game_id, fen, nuoc))
+        self.assertEqual(store.snapshot(game_id).moves, ["e4", "e5"])
+
+    def test_fen_khac_thi_khong_ap(self) -> None:
+        store, game_id = self._game()
+        store.submit(game_id, "e4")
+        self.assertFalse(
+            store.commit_ai_move(game_id, "ban sai", chess.Move.from_uci("e7e5"))
+        )
+        self.assertEqual(store.snapshot(game_id).moves, ["e4"])
+
+    def test_den_luot_nguoi_thi_khong_ap(self) -> None:
+        """Một lớp bảo vệ nữa: máy chỉ được đi khi CHƯA tới lượt người."""
+        store = GameStore()
+        game_id = store.create(chess.WHITE)
+        fen = store.fen_of(game_id)          # vừa tạo, lượt là của người
+        self.assertFalse(
+            store.commit_ai_move(game_id, fen, chess.Move.from_uci("e2e4"))
+        )
+        self.assertEqual(store.snapshot(game_id).moves, [])
+
+    def test_van_xong_thi_khong_ap(self) -> None:
+        # Ván hai bên: không có ràng buộc lượt, để dựng nhanh thế chiếu hết.
+        store = GameStore()
+        game_id = store.create(None)
+        for nuoc in ("f3", "e5", "g4", "Qh4#"):
+            store.submit(game_id, nuoc)
+        self.assertTrue(store.snapshot(game_id).over)
+        self.assertFalse(
+            store.commit_ai_move(
+                game_id, store.fen_of(game_id), chess.Move.from_uci("d1d2")
+            )
+        )
+
+    def test_fen_now_khong_lay_khoa(self) -> None:
+        """`fen_now` dùng BÊN TRONG khoá ván — phải đọc được chứ không treo."""
+        store, game_id = self._game()
+        done = threading.Event()
+
+        def doc():
+            store.fen_now(game_id)
+            done.set()
+
+        t = threading.Thread(target=doc)
+        t.start()
+        self.assertTrue(done.wait(timeout=2.0))
+
+    def test_fen_now_va_fen_of_cho_cung_ket_qua(self) -> None:
+        store, game_id = self._game()
+        store.submit(game_id, "d4")
+        self.assertEqual(store.fen_of(game_id), store.fen_now(game_id))
+
+    def test_set_thinking_phai_la_co_hoi_thi(self) -> None:
+        store, game_id = self._game()
+        self.assertFalse(store.snapshot(game_id).thinking)
+        store.set_thinking(game_id, True)
+        self.assertTrue(store.snapshot(game_id).thinking)
+        store.set_thinking(game_id, False)
+        self.assertFalse(store.snapshot(game_id).thinking)
+
+    def test_van_moi_xoa_thong_bao_nghi(self) -> None:
+        store, game_id = self._game()
+        store.set_thinking(game_id, True)
+        store.new_game(game_id)
+        self.assertFalse(store.snapshot(game_id).thinking)
+
 
 if __name__ == "__main__":
     unittest.main()

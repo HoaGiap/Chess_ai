@@ -15,7 +15,7 @@ from functools import partial
 import chess
 
 from .. import engine
-from .games import GameStore
+from .games import GameNotFound, GameStore
 
 # Engine mặc định. Test truyền engine giả vào để chạy nhanh và xác định.
 _MODULE_ENGINE = engine
@@ -38,7 +38,11 @@ class AIController:
             max_workers=4, thread_name_prefix="ai"
         )
         self._owns_pool = executor is None
-        self._flags: dict[str, bool] = {}
+        # SỐ THẾ HỆ, không phải cờ bool. Mỗi lần bắt đầu hoặc huỷ đều tăng, và
+        # thread mang theo số của lúc nó sinh ra. Thread cũ kết thúc muộn thì
+        # thấy số không còn khớp nên không đụng vào phiên mới. Cờ bool một chiều
+        # sẽ hoặc chết vĩnh viễn (luôn True) hoặc giết nhầm phiên mới.
+        self._gen: dict[str, int] = {}
         self._tasks: dict[str, Future] = {}
         self._guard = threading.Lock()
 
@@ -59,17 +63,25 @@ class AIController:
         if self._owns_pool:
             self._pool.shutdown(wait=False, cancel_futures=True)
 
-    # ---- cờ huỷ ---------------------------------------------------
+    # ---- hủy -------------------------------------------------------
 
     def cancel(self, game_id: str) -> None:
         """Báo thread đang tìm là kết quả của nó đã lỗi thời.
 
         Thread vẫn chạy hết thời gian rồi tự kết thúc — Python không huỷ được
-        thread, nhưng nó không giữ tài nguyên nào nên để vậy là được.
+        thread, nhưng nó không giữ tài nguyên nào nên để vậy là được. Ván MỚI vẫn
+        chơi được bình thường: lần `_start` sau sẽ lấy số thế hệ mới.
         """
         with self._guard:
-            self._flags[game_id] = True
-        self.store.set_thinking(game_id, False)
+            self._gen[game_id] = self._gen.get(game_id, 0) + 1
+        self._set_thinking(game_id, False)
+
+    def _set_thinking(self, game_id: str, value: bool) -> None:
+        """Đặt cờ, im lặng bỏ qua ván đã bị xoá khỏi bộ nhớ."""
+        try:
+            self.store.set_thinking(game_id, value)
+        except GameNotFound:
+            pass
 
     def thinking(self, game_id: str) -> bool:
         return bool(self.store.snapshot(game_id).thinking)
@@ -99,32 +111,37 @@ class AIController:
 
     def _start(self, game_id: str, fen: str) -> None:
         with self._guard:
-            if self._flags.get(game_id):
-                return
-            self._flags[game_id] = False
-        self.store.set_thinking(game_id, True)
-        task = self._pool.submit(self._run, game_id, fen)
+            gen = self._gen.get(game_id, 0) + 1
+            self._gen[game_id] = gen
+        self._set_thinking(game_id, True)
+        task = self._pool.submit(self._run, game_id, fen, gen)
         with self._guard:
             self._tasks[game_id] = task
 
-    def _run(self, game_id: str, fen: str) -> None:
+    def _is_current(self, game_id: str, gen: int) -> bool:
         with self._guard:
-            if self._flags.get(game_id):
-                return
-        try:
-            self._move(game_id, fen)
-        finally:
-            self.store.set_thinking(game_id, False)
+            return self._gen.get(game_id) == gen
 
-    def _move(self, game_id: str, fen: str) -> None:
+    def _run(self, game_id: str, fen: str, gen: int) -> None:
+        try:
+            self._move(game_id, fen, gen)
+        finally:
+            # Chỉ tắt đèn của chính mình. Thread cũ kết thúc muộn thì im lặng —
+            # nếu không nó sẽ tắt luôn đèn "AI đang nghĩ" của phiên mới và
+            # trình duyệt ngừng hỏi lại, treo ván.
+            # So số thế hệ MỘT LẦN rồi mới xoá, vì `_guard` không reentrant:
+            # gọi `_is_current` (vốn lấy khoá) bên trong `with _guard` sẽ tự treo.
+            # Dùng `if` chứ không `return`: `return` trong `finally` sẽ nuốt mất
+            # exception của `_move`.
+            if self._is_current(game_id, gen):
+                self._set_thinking(game_id, False)
+                with self._guard:
+                    self._tasks.pop(game_id, None)
+
+    def _move(self, game_id: str, fen: str, gen: int) -> None:
         elo = self.store.session(game_id).elo
         board = chess.Board(fen)
         move = self.engine.think(board, elo=elo, min_seconds=_MIN_THINK_SECONDS)
-        if move is None:
+        if move is None or not self._is_current(game_id, gen):
             return
-
-        with self._guard:
-            if self._flags.get(game_id):
-                return
-
         self.store.commit_ai_move(game_id, fen, move)

@@ -127,18 +127,6 @@ def material(board: chess.Board, color: chess.Color) -> int:
     )
 
 
-def min_material(board: chess.Board) -> int:
-    """Tổng giá trị quân của phe ÍT quân hơn (bỏ vua: vua không bị ăn)."""
-    white = 0
-    black = 0
-    for p in board.piece_map().values():
-        if p.piece_type == chess.KING:
-            continue          # vua không bao giờ bị ăn, tính vào sẽ phóng đại thang
-        if p.color == chess.WHITE:
-            white += VALUES[p.piece_type]
-        else:
-            black += VALUES[p.piece_type]
-    return min(white, black)
 
 
 def _scale(value: int, num: int, den: int) -> int:
@@ -341,9 +329,19 @@ def search(
 
 
 def think(
-    board: chess.Board, elo: int = 1500, min_seconds: float = 0.6
+    board: chess.Board,
+    elo: int = 1500,
+    min_seconds: float = 0.6,
+    rng=None,
 ) -> chess.Move | None:
-    """Nước đi của máy. `None` nghĩa là hết nước (hoặc thế đã chết)."""
+    """Nước đi của máy. `None` nghĩa là hết nước (hoặc thế đã chết).
+
+    `rng` là nguồn ngẫu nhiên dùng cho bước "cố tình chơi sai". Mặc định lấy
+    `random` toàn cục — hợp lý khi chơi thật, nhưng test phải truyền
+    `random.Random(seed)` nếu muốn ván hỏng tái lập được. Truyền `rng` không
+    đụng tới call site nào.
+    """
+    nguon = rng if rng is not None else random
     if board.is_game_over():
         return None
     bat_dau = time.monotonic()
@@ -362,9 +360,9 @@ def think(
     if blunder_rate > 0.0 and slack_cp > 0 and len(bang) > 1:
         diem_tot_nhat = bang[0][0]
         nhom = [m for d, m in bang if d >= diem_tot_nhat - slack_cp]
-        if len(nhom) > 1 and random.random() < blunder_rate:
+        if len(nhom) > 1 and nguon.random() < blunder_rate:
             bo_qua = max(1, len(nhom) // 3)   # không đánh rơi cả nước đúng nhất
-            nuoc = random.choice(nhom[bo_qua:])
+            nuoc = nguon.choice(nhom[bo_qua:])
 
     # Ở Elo thấp, tìm xong trong ~10 ms. Không chờ thêm thì máy đi tức thì và
     # cảm giác như đang đấu máy in — nên chờ cho đủ min_seconds.

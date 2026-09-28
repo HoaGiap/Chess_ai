@@ -54,14 +54,14 @@ def _guard(action, *args) -> JSONResponse:
         return JSONResponse({"error": str(exc)}, status_code=400)
 
 
-def create_app(store: GameStore | None = None) -> FastAPI:
+def create_app(store: GameStore | None = None, ai: AIController | None = None) -> FastAPI:
     games = store if store is not None else GameStore()
-    ai = AIController(games)
+    controller = ai if ai is not None else AIController(games)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         yield
-        ai.shutdown()
+        controller.shutdown()
 
     app = FastAPI(
         title="Chess_ai web", docs_url=None, redoc_url=None, lifespan=lifespan
@@ -76,7 +76,7 @@ def create_app(store: GameStore | None = None) -> FastAPI:
         data = payload if payload is not None else NewGameRequest()
         color = None if data.human_color is None else (data.human_color == "white")
         game_id = games.create(color, elo=max(600, min(2400, data.elo)))
-        ai.attach(game_id)
+        controller.attach(game_id)
         return _guard(games.snapshot, game_id)
 
     @app.get("/api/game/{game_id}")
@@ -90,13 +90,13 @@ def create_app(store: GameStore | None = None) -> FastAPI:
     @app.post("/api/game/{game_id}/undo")
     def undo(game_id: str) -> JSONResponse:
         # Hủy trước: nếu AI đang nghĩ, kết quả của nó đã lỗi thời.
-        ai.cancel(game_id)
+        controller.cancel(game_id)
         return _guard(games.undo, game_id)
 
     @app.post("/api/game/{game_id}/new")
     def new_game(game_id: str) -> JSONResponse:
-        ai.cancel(game_id)
-        return _guard(games.new_game, game_id)
+        controller.cancel(game_id)
+        return _guard(_van_moi_va_bat_dau_ai, games, controller, game_id)
 
     @app.get("/api/game/{game_id}/pgn")
     def pgn(game_id: str) -> JSONResponse:
@@ -104,6 +104,21 @@ def create_app(store: GameStore | None = None) -> FastAPI:
 
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
     return app
+
+
+def _van_moi_va_bat_dau_ai(games: GameStore, ai: AIController, game_id: str) -> dict:
+    """Bắt đầu ván mới, rồi bảo máy đi nếu đã tới lượt nó.
+
+    `Session.restart()` không bắn `on_move`, nên không ai bảo máy đi nếu ván mới
+    mà máy đi trước (người chơi chọn phe Đen) — bàn sẽ khoá vĩnh viễn.
+
+    Thứ tự rất quan trọng: phải `attach` TRƯỚC rồi mới chụp trạng thái. Chụp
+    trước thì response mang `thinking: false`, trình duyệt thấy vậy là ngừng
+    hỏi lại — máy vẫn đi nước nhưng người chơi không bao giờ thấy.
+    """
+    games.new_game(game_id)
+    ai.attach(game_id)
+    return games.snapshot(game_id).model_dump()
 
 
 app = create_app()

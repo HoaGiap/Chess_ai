@@ -258,7 +258,7 @@ function apply(next) {
   // Chỉ khi là VÁN MỚI mới tự đặt hướng bàn theo phe người chơi. Nếu đặt mỗi
   // nước đi thì nút "Lật bàn" sẽ bị ghi đè ngay lần sau — mà người chơi cần
   // xem ngược lại bàn khi đấu máy.
-  const doiVan = state !== null && state.game_id !== next.game_id;
+  const doiVan = state === null || state.game_id !== next.game_id;
   state = next;
   aiThinking = next.thinking;
   selected = null;
@@ -291,9 +291,15 @@ function pollAi() {
   pollTimer = setTimeout(async () => {
     pollTimer = null;
     try {
-      apply(await api(`/api/game/${state.game_id}`, "GET"));
+      const next = await api(`/api/game/${state.game_id}`, "GET");
+      // Người chơi có thể đã bấm Ván mới / Lùi trong lúc chờ; khi đó response
+      // này là của ván CŨ và sẽ đè bàn ngược lại. Bỏ qua nếu ván đã đổi.
+      if (state === null || state.game_id !== next.game_id) return;
+      apply(next);
     } catch (error) {
+      aiThinking = false;
       stopPolling();
+      el.squares.classList.remove("locked");
       say(error.message, true);
     }
   }, 300);
@@ -417,9 +423,11 @@ async function withState(action) {
   }
 }
 
-el.undo.addEventListener("click", () => withState(
-  (s) => api(`/api/game/${s.game_id}/undo`, "POST"),
-));
+el.undo.addEventListener("click", () => {
+  stopPolling();            // xem lý do o trên
+  aiThinking = false;
+  withState((s) => api(`/api/game/${s.game_id}/undo`, "POST"));
+});
 
 document.getElementById("flip").addEventListener("click", () => {
   if (!state) return;
@@ -434,6 +442,8 @@ document.getElementById("new").addEventListener("click", () => {
   // Đang đấu máy thì giữ cấu hình, chỉ bắt đầu ván mới. Chưa đấu thì hỏi
   // phe và Elo trước — không có AI thì các lựa chọn đó chẳng dùng để làm gì.
   if (state && state.human_color !== null) {
+    stopPolling();          // response poll dang bay se den sau, de ban nguoc lai
+    aiThinking = false;
     withState((s) => api(`/api/game/${s.game_id}/new`, "POST"));
     return;
   }

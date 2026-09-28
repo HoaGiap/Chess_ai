@@ -14,11 +14,30 @@ Hai điều cần biết khi test kiểu này:
 import json
 import mimetypes
 import re
+import threading
 import unittest
 
+from chessai.web.ai import AIController
 from chessai.web.app import STATIC_DIR, MoveRequest, NewGameRequest, create_app
 from chessai.web.games import GameStore
 from chessai.web.schema import GameState, MoveOption
+
+
+class _FakeEngine:
+    """Engine giả cho test route: trả SAN cố định, chặn được."""
+
+    def __init__(self, *moves: str, blocks=None):
+        self.moves = list(moves)
+        self.blocks = list(blocks or [])
+
+    def think(self, board, elo=1500, min_seconds=0.0):
+        if self.blocks:
+            self.blocks.pop(0).wait(timeout=5.0)
+        wanted = self.moves.pop(0) if self.moves else None
+        for move in board.legal_moves:
+            if wanted and board.san(move) == wanted:
+                return move
+        return next(iter(board.legal_moves), None)
 
 
 def match_endpoint(application, method: str, path: str):
@@ -182,6 +201,49 @@ class TestStaticContentType(unittest.TestCase):
         # assertRegex nhận (text, regex, msg) — cờ phải nằm trong chính regex,
         # truyền re.MULTILINE vào tham số thứ ba chỉ là đổi thông điệp.
         self.assertRegex(script, re.compile(r"^\s*apply\(await ", re.MULTILINE))
+
+
+class TestVanMoiBamAI(unittest.TestCase):
+    """Review: phải `attach` (bật AI) TRƯỚC rồi mới chụp trạng thái.
+
+    Chụp trước thì response mang `thinking: false`, trình duyệt thấy là ngừng hỏi
+    lại — máy vẫn đi nước nhưng người chơi không bao giờ thấy, và bàn kẹt khoá.
+    """
+
+    def setUp(self) -> None:
+        self.store = GameStore()
+        self.chan = threading.Event()
+        self.eng = _FakeEngine("e4", "e4", blocks=[self.chan, self.chan])
+        self.ai = AIController(self.store, engine=self.eng)
+        self.app = create_app(self.store, self.ai)
+
+    def _route(self, method: str, path: str):
+        endpoint, params = match_endpoint(self.app, method, path)
+        return lambda: endpoint(**params)
+
+    def _body(self, response) -> dict:
+        return json.loads(response.body)
+
+    def test_van_moi_ma_may_di_truoc_thi_phai_bao_nghi(self) -> None:
+        gid = self._body(
+            self._route("POST", "/api/game")()
+        )["game_id"]
+        gid = self.store.create(False)          # người chơi phe Đen
+        self.ai.attach(gid)
+        self.chan.set(); self.chan.clear()     # cho nước mở chạy xong
+
+        state = self._body(self._route("POST", f"/api/game/{gid}/new")())
+        self.assertTrue(
+            state["thinking"],
+            "response van bao thinking=false -> trinh duyet dung hoi lai",
+        )
+        self.assertEqual(state["moves"], [])
+
+    def test_van_moi_ma_nguoi_di_truoc_thi_khong_bat_nghi(self) -> None:
+        gid = self.store.create(True)          # người chơi phe Trắng
+        self.ai.attach(gid)
+        state = self._body(self._route("POST", f"/api/game/{gid}/new")())
+        self.assertFalse(state["thinking"])
 
 
 class TestOpenApiContract(unittest.TestCase):

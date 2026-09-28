@@ -23,9 +23,15 @@ class FakeEngine:
     đúng thế cờ đó (ví dụ bấm "Ván mới" làm bàn cờ về xuất phát).
     """
 
-    def __init__(self, *moves: str, block: threading.Event | None = None):
+    def __init__(
+        self,
+        *moves: str,
+        block: threading.Event | None = None,
+        blocks: list[threading.Event] | None = None,
+    ):
         self.moves = list(moves)
         self.block = block
+        self.blocks = list(blocks or [])
         self.calls = 0
         self.fens: list[str] = []
         self.elos: list[int] = []
@@ -34,6 +40,8 @@ class FakeEngine:
         self.calls += 1
         self.fens.append(board.fen())
         self.elos.append(elo)
+        if self.blocks:
+            self.blocks.pop(0).wait(timeout=5.0)
         if self.block is not None:
             self.block.wait(timeout=5.0)
         wanted = self.moves.pop(0) if self.moves else None
@@ -168,6 +176,126 @@ class TestHook(unittest.TestCase):
         state = store.snapshot(game_id)
         self.assertTrue(state.over, state.moves)
         self.assertFalse(state.thinking)
+
+
+class TestHuyMotChieu(unittest.TestCase):
+    """Review: cờ huỷ là CHỐT MỘT CHIỀU — `_start` thoát sớm nếu cờ đang True và
+    không bao giờ xoá. Bấm "Ván mới" một lần là AI chết hẳn trong ván đó, và
+    người dùng phải F5 mới chơi lại được.
+    """
+
+    def _bo(self, engine, human=chess.WHITE):
+        store = GameStore()
+        ai = AIController(store, engine=engine)
+        game_id = store.create(human)
+        ai.attach(game_id)
+        return store, ai, game_id
+
+    def test_sau_huy_van_moi_thi_ai_van_di_duoc(self) -> None:
+        store, ai, game_id = self._bo(FakeEngine("e5", "c5"))
+        store.submit(game_id, "e4")
+        ai.wait_idle(game_id)
+        self.assertEqual(store.snapshot(game_id).moves, ["e4", "e5"])
+
+        ai.cancel(game_id)          # y hiu nhu route "Van moi"
+        store.new_game(game_id)
+        self.assertEqual(store.snapshot(game_id).moves, [])
+
+        store.submit(game_id, "d4")  # nguoi van phai duoc AI dap
+        ai.wait_idle(game_id)
+        self.assertEqual(
+            store.snapshot(game_id).moves, ["d4", "c5"],
+            "AI khong con di duoc sau khi huy",
+        )
+
+    def test_sau_huy_roi_lui_thi_ai_van_di_duoc(self) -> None:
+        store, ai, game_id = self._bo(FakeEngine("e5", "c5"))
+        store.submit(game_id, "e4")
+        ai.wait_idle(game_id)
+        ai.cancel(game_id)
+        store.undo(game_id)
+        store.submit(game_id, "d4")
+        ai.wait_idle(game_id)
+        self.assertEqual(store.snapshot(game_id).moves, ["d4", "c5"])
+
+
+class TestVanMoiKhiMayDiTruoc(unittest.TestCase):
+    """Review: `Session.restart()` KHÔNG bắn `on_move`, nên sau "Ván mới" ở ván
+    mà máy đi trước (người chơi chọn phe Đen) không ai bảo máy đi — bàn bị khoá
+    vĩnh viễn, người chơi phải F5 mới chơi lại được.
+    """
+
+    def test_van_moi_ma_may_di_truoc_thi_may_van_di(self) -> None:
+        store = GameStore()
+        ai = AIController(store, engine=FakeEngine("e4", "e4"))
+        game_id = store.create(chess.BLACK)
+        ai.attach(game_id)
+        ai.wait_idle(game_id)
+        self.assertEqual(store.snapshot(game_id).moves, ["e4"])
+
+        # đúng như route "Ván mới": hủy rồi bắt đầu lại, rồi gắn lại
+        ai.cancel(game_id)
+        store.new_game(game_id)
+        ai.attach(game_id)
+        ai.wait_idle(game_id)
+        self.assertEqual(
+            store.snapshot(game_id).moves, ["e4"],
+            "may khong duoc di nuoc dau tien cua van moi",
+        )
+        self.assertFalse(store.snapshot(game_id).thinking)
+
+    def test_van_moi_ma_nguoi_di_truoc_thi_khong_bat_dieu_gap(self) -> None:
+        store = GameStore()
+        ai = AIController(store, engine=FakeEngine("c5", "c5"))
+        game_id = store.create(chess.WHITE)
+        ai.attach(game_id)
+        store.submit(game_id, "d4")
+        ai.wait_idle(game_id)
+        self.assertEqual(store.snapshot(game_id).moves, ["d4", "c5"])
+
+        ai.cancel(game_id)
+        store.new_game(game_id)
+        ai.attach(game_id)
+        self.assertFalse(store.snapshot(game_id).thinking)
+
+
+class TestThreadCuKhongDuocXoaCoHienTich(unittest.TestCase):
+    """Review: `finally: set_thinking(False)` cua thread CU se xoa co "AI dang
+    nghi" cua phien MOI dang chay — client dung poll va van treo.
+    """
+
+    def test_thread_cu_ket_thuc_khong_tat_thong_bao_nghi_cua_phien_moi(self) -> None:
+        store = GameStore()
+        cu, moi = threading.Event(), threading.Event()
+        eng = FakeEngine("e5", "c5", blocks=[cu, moi])
+        ai = AIController(store, engine=eng)
+        game_id = store.create(chess.WHITE)
+        ai.attach(game_id)
+
+        store.submit(game_id, "e4")          # thread CU bat dau, bi khoa
+        ai.cancel(game_id)
+        store.new_game(game_id)
+        store.submit(game_id, "d4")          # thread MOI bat dau, bi khoa
+        self.assertTrue(store.snapshot(game_id).thinking)
+
+        cu.set()                              # thread CU ket thuc
+        cu_done = threading.Event()
+        original = store.set_thinking
+
+        def gan(gid, value):
+            if not value:
+                cu_done.set()
+            original(gid, value)
+
+        store.set_thinking = gan
+        cu_done.wait(timeout=3.0)
+        store.set_thinking = original
+        self.assertTrue(
+            store.snapshot(game_id).thinking,
+            "thread cu da tat co 'AI dang nghi' cua phien moi",
+        )
+        moi.set()
+        ai.wait_idle(game_id)
 
 
 class TestRealEngine(unittest.TestCase):
