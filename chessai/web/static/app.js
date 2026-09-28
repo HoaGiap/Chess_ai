@@ -26,6 +26,19 @@ let state = null;
 let orientation = "w";   // "w" = quân Trắng ở dưới
 let selected = null;     // ô nguồn đang chọn
 let promoting = null;    // { sanByLetter } đang chờ chọn quân phong cấp
+let busy = false;        // đang chờ máy chủ trả lời
+
+// Khoá bàn và nút trong lúc đang bay, để không gửi hai nước cùng lúc —
+// hai response tới lệch thứ tự thì trình duyệt lệch máy chủ vĩnh viễn.
+function lockUi(locked) {
+  el.squares.style.pointerEvents = locked ? "none" : "";
+  for (const id of ["undo", "new", "pgn"]) {
+    const button = document.getElementById(id);
+    if (!button) continue;
+    if (id === "undo" && state) button.disabled = locked || !state.can_undo;
+    else button.disabled = locked;
+  }
+}
 
 function pieceUrl(ch) {
   const white = ch === ch.toUpperCase();
@@ -38,9 +51,27 @@ async function api(path, method, payload) {
     options.headers = { "Content-Type": "application/json" };
     options.body = JSON.stringify(payload);
   }
-  const response = await fetch(path, options);
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error || "Lỗi máy chủ");
+  let response;
+  try {
+    response = await fetch(path, options);
+  } catch (cause) {
+    // Máy chủ tắt / mạng đứt. `fetch` ném TypeError tiếng Anh — phải đổi
+    // sang tiếng Việt, nếu không người chơi thấy "Failed to fetch".
+    throw new Error("Không gọi được máy chủ — nó còn chạy không?");
+  }
+  // Phải thử đọc JSON TRƯỚC khi kiểm response.ok: 500/404-HTML hoặc
+  // trang bị chắn sẽ làm response.json() ném, và thông báo tiếng Việt
+  // trong body sẽ mất sạch.
+  let data = null;
+  try {
+    data = await response.json();
+  } catch {
+    data = null;
+  }
+  if (!response.ok) {
+    throw new Error(data?.error || `Máy chủ trả lỗi ${response.status}.`);
+  }
+  if (data === null) throw new Error("Máy chủ trả về dữ liệu không đọc được.");
   return data;
 }
 
@@ -108,9 +139,6 @@ function legalFrom(source) {
 }
 
 function paintBoard(cells) {
-  // Chỉ vua của phe ĐANG ĐI mới có thể bị chiếu — state.check là boolean
-  // chung nên phải lọc theo state.turn, nếu không cả hai vua đều bị khoanh đỏ.
-  const checkedKing = state.turn === "white" ? "K" : "k";
   el.squares.querySelectorAll(".sq").forEach((sq) => {
     sq.classList.remove("last", "sel", "check");
     sq.querySelector(".dot")?.remove();
@@ -118,8 +146,9 @@ function paintBoard(cells) {
     const name = sq.dataset.sq;
     if (name === state.last_from || name === state.last_to) sq.classList.add("last");
     if (name === selected) sq.classList.add("sel");
-    // Vua đang bị chiếu: tìm trong FEN, không phải luật cờ vua.
-    if (state.check && cells[name] === checkedKing) sq.classList.add("check");
+    // Máy chủ đã nói ô nào đang bị chiếu. Trình duyệt không tự suy ra:
+    // "vua nào bị chiếu" là luật cờ vua, không phải trình bày.
+    if (state.check && name === state.check_square) sq.classList.add("check");
   });
   if (!selected) return;
   // Nhiều nước đi có thể CÙNG một ô đích — tốt b7 vừa bắt a8/c8 vừa phong cấp
@@ -138,6 +167,17 @@ function paintBoard(cells) {
 }
 
 function paintPieces(cells) {
+  // Quân vừa đi phải GIỮ node cũ và chỉ đổi khoá `data-sq`, để transform
+  // đổi và CSS transition trượt nó. Nếu xoá rồi tạo node mới, transition
+  // không bao giờ kích hoạt — quân biến mất rồi xuất hiện ở chỗ mới.
+  // Phong cấp (P -> Q) không khớp nên rơi về tạo node mới; chấp nhận được.
+  if (state.last_from && state.last_to) {
+    const moved = el.pieces.querySelector(`.piece[data-sq="${state.last_from}"]`);
+    const landed = cells[state.last_to];
+    if (moved && landed === moved.dataset.ch) {
+      moved.dataset.sq = state.last_to;
+    }
+  }
   el.pieces.querySelectorAll(".piece").forEach((node) => {
     if (cells[node.dataset.sq] !== node.dataset.ch) node.remove();
   });
@@ -213,8 +253,11 @@ function hidePicker() {
 }
 
 function showPicker(options, target) {
+  // Khoá theo `promotion` (tên quân), KHÔNG theo ký tự cuối của SAN: SAN
+  // phong cấp kèm chiếu có đuôi `+` (g8=Q+) nên slice(-1) ra "+", bấm Q sẽ
+  // gửi san=undefined và hỏng.
   promoting = { sanByLetter: {} };
-  options.forEach((o) => { promoting.sanByLetter[o.san.slice(-1)] = o.san; });
+  for (const o of options) promoting.sanByLetter[o.promotion] = o.san;
   el.picker.hidden = false;
   el.picker.innerHTML = "";
   const { col, row } = cellOf(target);
@@ -237,18 +280,24 @@ function showPicker(options, target) {
 }
 
 async function send(san) {
+  if (busy) return;           // đang bay: bỏ qua, nếu không sẽ gửi 2 nước
+  busy = true;
+  lockUi(true);
   try {
     const next = await api(`/api/game/${state.game_id}/move`, "POST", { san });
     say("");                 // xoá thông báo cũ TRƯỚC khi vẽ
     apply(next);             // nếu vừa kết thúc, paintPanel mới là người viết
   } catch (error) {
     say(error.message, true);   // bàn cờ KHÔNG đổi
+  } finally {
+    busy = false;
+    lockUi(false);
   }
 }
 
 el.squares.addEventListener("click", (event) => {
   const sq = event.target.closest(".sq");
-  if (!sq || !state || state.over) return;
+  if (!sq || !state || state.over || busy) return;
   const name = sq.dataset.sq;
 
   // Đang chờ chọn quân phong cấp thì bấm ô nào cũng chỉ huỷ, không đi nước nào.
@@ -288,45 +337,49 @@ el.squares.addEventListener("click", (event) => {
   }
 });
 
-el.undo.addEventListener("click", async () => {
+// Nút này dùng chung cho cả 4 hành động, nên mọi nơi đều phải qua đây —
+// `state` có thể còn null nếu POST /api/game lúc mở trang thất bại.
+async function withState(action) {
+  if (!state) {
+    say("Chưa có ván nào. Bấm 'Ván mới' để bắt đầu.", true);
+    return;
+  }
   try {
-    const next = await api(`/api/game/${state.game_id}/undo`, "POST");
+    const next = await action(state);
     say("");
     apply(next);
   } catch (error) {
     say(error.message, true);
   }
-});
+}
+
+el.undo.addEventListener("click", () => withState(
+  (s) => api(`/api/game/${s.game_id}/undo`, "POST"),
+));
 
 document.getElementById("flip").addEventListener("click", () => {
+  if (!state) return;
   orientation = orientation === "w" ? "b" : "w";
   buildSquares();
   apply(state);
 });
 
-document.getElementById("new").addEventListener("click", async () => {
-  try {
-    const next = await api("/api/game", "POST");
-    say("");
-    apply(next);
-  } catch (error) {
-    say(error.message, true);
-  }
-});
+// Ưu tiên route /new của ván đang chơi (nó có tồn tại vì `new_game` giữ cấu
+// hình Session cho #3B); chỉ tạo ván mới khi chưa có ván nào.
+document.getElementById("new").addEventListener("click", () => withState(
+  (s) => api(`/api/game/${s.game_id}/new`, "POST"),
+));
 
-document.getElementById("pgn").addEventListener("click", async () => {
-  try {
-    const { pgn } = await api(`/api/game/${state.game_id}/pgn`, "GET");
-    const url = URL.createObjectURL(new Blob([pgn], { type: "application/x-chess-pgn" }));
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = "chess-ai.pgn";
-    link.click();
-    URL.revokeObjectURL(url);
-  } catch (error) {
-    say(error.message, true);
-  }
-});
+document.getElementById("pgn").addEventListener("click", () => withState(async (s) => {
+  const { pgn } = await api(`/api/game/${s.game_id}/pgn`, "GET");
+  const url = URL.createObjectURL(new Blob([pgn], { type: "application/x-chess-pgn" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "chess-ai.pgn";
+  link.click();
+  URL.revokeObjectURL(url);
+  return s;   // không đổi bàn cờ
+}));
 
 const themeButton = document.getElementById("theme");
 function setTheme(theme) {

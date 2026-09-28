@@ -1,3 +1,4 @@
+import threading
 import unittest
 
 import chess
@@ -88,6 +89,47 @@ class TestMove(unittest.TestCase):
         for option in options:
             self.assertTrue(option.promotion, option.san)
             self.assertEqual(option.from_sq, "a7")
+
+    def test_promotion_option_names_the_piece_to_promote_to(self) -> None:
+        """Review #1: phải biết quân nào, không chỉ biết CÓ phong cấp.
+
+        Trình duyệt từng lấy ký tự cuối của SAN để đoán quân. SAN của một nước
+        phong cấp kèm chiếu có đuôi `+` (g8=Q+), nên ký tự cuối là `+`, không
+        phải tên quân — bấm nút Q/R sẽ gửi san=undefined và hỏng.
+        """
+        store, game_id = fresh("7k/6P1/8/8/8/8/8/4K3 w - - 0 1")
+        options = [m for m in store.snapshot(game_id).legal if m.to_sq == "g8"]
+        self.assertEqual({m.promotion for m in options}, {"Q", "R", "B", "N"})
+        # Khoá lại bằng chứng của cái bẫy: ở thế này phải CÓ nước mà ký tự
+        # cuối của SAN khác tên quân. Nếu sau này SAN không còn đuôi `+` thì
+        # assertion này đỏ và buộc phải cân nhắc lại, chứ im lặng cho phép ai
+        # đó quay lại dùng san.slice(-1).
+        self.assertTrue(
+            any(m.san[-1] != m.promotion for m in options),
+            "thế này không còn chứng minh được cái bẫy san.slice(-1)",
+        )
+
+    def test_promotion_letter_is_stable_regardless_of_check(self) -> None:
+        store, game_id = fresh("7k/6P1/8/8/8/8/8/4K3 w - - 0 1")
+        options = [m for m in store.snapshot(game_id).legal if m.to_sq == "g8"]
+        by_letter = {m.promotion: m.san for m in options}
+        self.assertEqual(by_letter["Q"], "g8=Q+")   # có chiếu
+        self.assertEqual(by_letter["B"], "g8=B")    # không chiếu
+        self.assertEqual(by_letter["N"], "g8=N")
+
+    def test_non_promotion_has_no_piece_letter(self) -> None:
+        store, game_id = fresh()
+        for option in store.snapshot(game_id).legal:
+            self.assertIsNone(option.promotion, option.san)
+
+    def test_check_square_names_the_king_in_check(self) -> None:
+        """Review 1a: trình duyệt không được tự suy ra vua nào bị chiếu."""
+        store, game_id = fresh("4k3/8/8/8/8/8/4r3/4K3 w - - 0 1")
+        self.assertEqual(store.snapshot(game_id).check_square, "e1")
+
+    def test_no_check_means_no_check_square(self) -> None:
+        store, game_id = fresh()
+        self.assertIsNone(store.snapshot(game_id).check_square)
 
     def test_en_passant_option_lands_on_empty_square(self) -> None:
         """Tốt a5 đi được 2 nước: a6 (đẩy) và b6 (bắt qua đường)."""
@@ -195,6 +237,172 @@ class TestNotFound(unittest.TestCase):
             GameStore().snapshot("abc")
         self.assertIn("Ván", str(ctx.exception))
         self.assertIn("Ván mới", str(ctx.exception))
+
+
+class TestOver(unittest.TestCase):
+    """Review: `over` và `result_text` chưa từng được assert là đúng.
+
+    Hai field này đóng băng bàn cờ và sinh dòng kết quả ở trình duyệt, nên sai
+    thì toàn bộ UX 'hết ván' hỏng mà không test nào đỏ.
+    """
+
+    def _play(self, sans: tuple[str, ...]) -> tuple[GameStore, str, object]:
+        store, game_id = fresh()
+        for san in sans:
+            store.submit(game_id, san)
+        return store, game_id, store.snapshot(game_id)
+
+    def test_mate_sets_over_and_names_checkmate(self) -> None:
+        _, _, state = self._play(("f3", "e5", "g4", "Qh4#"))
+        self.assertTrue(state.over)
+        self.assertIn("chiếu hết", state.result_text)
+        self.assertEqual(state.legal, [])
+        self.assertFalse(state.can_undo is False and state.moves == [])
+
+    def test_stalemate_sets_over_and_names_stalemate(self) -> None:
+        store, game_id = fresh("7k/5Q2/6K1/8/8/8/8/8 b - - 0 1")
+        state = store.snapshot(game_id)
+        self.assertTrue(state.over)
+        self.assertIn("bế tắc", state.result_text)
+
+    def test_declared_draw_sets_over_and_names_draw(self) -> None:
+        store, game_id = fresh()
+        store.session(game_id).agree_draw()
+        state = store.snapshot(game_id)
+        self.assertTrue(state.over)
+        self.assertIn("HÒA", state.result_text)
+
+    def test_moving_after_the_end_is_refused(self) -> None:
+        store, game_id, _ = self._play(("f3", "e5", "g4", "Qh4#"))
+        with self.assertRaises(MoveError):
+            store.submit(game_id, "Nf3")
+
+    def test_new_game_clears_a_finished_game(self) -> None:
+        store, game_id, state = self._play(("f3", "e5", "g4", "Qh4#"))
+        self.assertTrue(state.over)
+        after = store.new_game(game_id)
+        self.assertFalse(after.over)
+        self.assertEqual(after.moves, [])
+
+
+class TestNewGameKeepsSession(unittest.TestCase):
+    """Review #7: `new_game` tạo Session mới thì mất `on_move` — hook của #3B.
+
+    Sau khi cắm engine, bấm 'Ván mới' sẽ âm thầm mất callback AI.
+    """
+
+    def test_new_game_keeps_the_same_session_object(self) -> None:
+        store, game_id = fresh()
+        before = store.session(game_id)
+        before.on_move = lambda san, color: None
+        store.new_game(game_id)
+        after = store.session(game_id)
+        self.assertIs(after, before)
+        self.assertIsNotNone(after.on_move)
+
+    def test_new_game_resets_declared_result(self) -> None:
+        store, game_id = fresh()
+        store.session(game_id).resign(chess.WHITE)
+        self.assertTrue(store.snapshot(game_id).over)
+        self.assertFalse(store.new_game(game_id).over)
+
+    def test_new_game_keeps_configuration(self) -> None:
+        store, game_id = fresh()
+        store.session(game_id).elo = 2100
+        store.session(game_id).style = "tal"
+        store.session(game_id).mode = "play"
+        store.new_game(game_id)
+        after = store.session(game_id)
+        self.assertEqual((after.elo, after.style, after.mode), (2100, "tal", "play"))
+
+
+class TestCapacity(unittest.TestCase):
+    """Review #6: ván tích luỹ vô hạn trong bộ nhớ.
+
+    `POST /api/game` là CORS simple request, nên bất kỳ trang nào cũng POST
+    vòng lòng vào được. Phải có trần.
+    """
+
+    def test_store_takes_a_capacity(self) -> None:
+        self.assertGreater(GameStore(capacity=2).capacity, 0)
+
+    def test_oldest_game_is_forgotten_over_capacity(self) -> None:
+        store = GameStore(capacity=2)
+        ids = [store.create(None) for _ in range(4)]
+        with self.assertRaises(GameNotFound):
+            store.snapshot(ids[0])
+        store.snapshot(ids[3])   # ván mới nhất vẫn còn
+
+    def test_creating_a_game_makes_room(self) -> None:
+        store = GameStore(capacity=1)
+        first = store.create(None)
+        store.create(None)
+        with self.assertRaises(GameNotFound):
+            store.snapshot(first)
+
+    def test_default_capacity_is_finite(self) -> None:
+        self.assertLess(0, GameStore().capacity < 100_000)
+
+
+class TestConcurrency(unittest.TestCase):
+    """Review #2: `board.san()` tạm ĐẨY rồi LÙI trên Board dùng chung.
+
+    Nên nhánh đọc (`snapshot`, `pgn_text`) cũng phải khoá. Trước khi sửa, một
+    writer + vài reader chạy song song làm `san()` gặp nước nửa vời và ném
+    AssertionError — HTTP 500 với body không phải JSON.
+    """
+
+    def test_reading_during_a_move_never_raises(self) -> None:
+        store, game_id = fresh()
+        errors: list[BaseException] = []
+
+        def writer() -> None:
+            try:
+                for san in ("e4", "e5", "Nf3", "Nc6", "Bb5", "a6", "O-O"):
+                    store.submit(game_id, san)
+            except BaseException as exc:  # noqa: BLE001 - đang đi săn lỗi
+                errors.append(exc)
+
+        def reader() -> None:
+            try:
+                for _ in range(500):
+                    store.snapshot(game_id)
+            except BaseException as exc:  # noqa: BLE001 - đang đi săn lỗi
+                errors.append(exc)
+
+        threads = [threading.Thread(target=writer)] + [
+            threading.Thread(target=reader) for _ in range(3)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual([str(e) for e in errors], [])
+
+    def test_pgn_while_moving_never_raises(self) -> None:
+        store, game_id = fresh()
+        errors: list[BaseException] = []
+
+        def writer() -> None:
+            try:
+                for san in ("e4", "e5", "Nf3", "Nc6"):
+                    store.submit(game_id, san)
+            except BaseException as exc:  # noqa: BLE001 - đang đi săn lỗi
+                errors.append(exc)
+
+        def reader() -> None:
+            try:
+                for _ in range(300):
+                    store.pgn_text(game_id)
+            except BaseException as exc:  # noqa: BLE001 - đang đi săn lỗi
+                errors.append(exc)
+
+        threads = [threading.Thread(target=writer), threading.Thread(target=reader)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual([str(e) for e in errors], [])
 
 
 if __name__ == "__main__":

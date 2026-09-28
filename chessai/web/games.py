@@ -27,6 +27,10 @@ _PIECE_LETTER = {
 
 _ID_LENGTH = 12
 
+# Trần số ván trong bộ nhớ. `POST /api/game` là CORS simple request nên bất kỳ
+# trang nào cũng POST vòng lòng vào được; không có trần thì bộ nhớ phình vô hạn.
+_DEFAULT_CAPACITY = 200
+
 _MISSING = (
     "Ván không còn tồn tại — máy chủ đã khởi động lại. Bấm 'Ván mới' để chơi tiếp."
 )
@@ -43,7 +47,9 @@ def _move_options(board: chess.Board) -> list[MoveOption]:
             to_sq=chess.square_name(move.to_square),
             san=board.san(move),
             capture=board.is_capture(move),
-            promotion=move.promotion is not None,
+            promotion=(
+                chess.piece_symbol(move.promotion).upper() if move.promotion else None
+            ),
         )
         for move in board.legal_moves
     ]
@@ -83,28 +89,54 @@ def _plies_per_turn(session: Session) -> int:
 
 
 class GameStore:
-    def __init__(self) -> None:
+    def __init__(self, capacity: int = _DEFAULT_CAPACITY) -> None:
+        if capacity < 1:
+            raise ValueError("capacity phải >= 1")
+        self.capacity = capacity
         self._games: dict[str, Session] = {}
         self._locks: dict[str, threading.Lock] = {}
+        # Thứ tự chèn, để cắt bỏ ván cũ nhất khi đầy (thay cho OrderedDict
+        # để `dict` chỉ cần hỗ trợ xoá giữa chừng).
+        self._order: list[str] = []
+        self._guard = threading.Lock()
 
     def create(self, human_color: chess.Color | None) -> str:
         game_id = secrets.token_urlsafe(16)[:_ID_LENGTH]
-        self._games[game_id] = Session(human_color=human_color)
-        self._locks[game_id] = threading.Lock()
+        with self._guard:
+            self._games[game_id] = Session(human_color=human_color)
+            self._locks[game_id] = threading.Lock()
+            self._order.append(game_id)
+            while len(self._order) > self.capacity:
+                self._drop(self._order[0])
         return game_id
 
     def forget(self, game_id: str) -> None:
         """Xoá ván khỏi bộ nhớ — mô phỏng hành vi mất ván khi máy chủ restart."""
-        self._require(game_id)
-        del self._games[game_id]
-        del self._locks[game_id]
+        with self._guard:
+            self._require(game_id)
+            self._drop(game_id)
+
+    def session(self, game_id: str) -> Session:
+        """Trả về `Session` để #3B cắm engine qua `on_move`."""
+        return self._require(game_id)
 
     def set_fen(self, game_id: str, fen: str) -> None:
         """Nạp một thế cờ cụ thể. Dùng cho kiểm thử và #4 (`Review`)."""
-        session = self._require(game_id)
-        session.position = Position(fen)
+        with self._lock(game_id):
+            self._require(game_id).position = Position(fen)
 
     def snapshot(self, game_id: str) -> GameState:
+        # Phải khoá CẢ nhánh đọc: `board.san()` bên trong `_move_options` tạm
+        # đẩy rồi lùi trên `chess.Board` dùng chung, nên đọc song song với
+        # một nước đi sẽ gặp bàn cờ nửa vời và python-chess ném AssertionError.
+        with self._lock(game_id):
+            return self._snapshot(game_id)
+
+    def _snapshot(self, game_id: str) -> GameState:
+        """Thân của `snapshot`, KHÔNG khoá — dùng bên trong khoá đã có.
+
+        `threading.Lock` không reentrant nên không khoá lồng được.
+        """
         session = self._require(game_id)
         board = session.position.board
         by_white, by_black = _captured(board)
@@ -113,6 +145,9 @@ class GameStore:
             played = board.move_stack[-1]
             last_from = chess.square_name(played.from_square)
             last_to = chess.square_name(played.to_square)
+        check_square = None
+        if board.is_check():
+            check_square = chess.square_name(board.king(board.turn))
         return GameState(
             game_id=game_id,
             fen=board.fen(),
@@ -122,6 +157,7 @@ class GameStore:
             last_from=last_from,
             last_to=last_to,
             check=board.is_check(),
+            check_square=check_square,
             over=session.is_game_over(),
             result_text=session.result_text(),
             moves=session.position.san_history(),
@@ -134,7 +170,7 @@ class GameStore:
         with self._lock(game_id):
             session = self._require(game_id)
             session.apply_san(san)
-            return self.snapshot(game_id)
+            return self._snapshot(game_id)
 
     def undo(self, game_id: str) -> GameState:
         with self._lock(game_id):
@@ -143,16 +179,26 @@ class GameStore:
             # im lặng bỏ qua sẽ khiến route trả 200 cho một lệnh không làm gì.
             if not session.undo_turn():
                 raise MoveError("Không có nước nào để lùi.")
-            return self.snapshot(game_id)
+            return self._snapshot(game_id)
 
     def new_game(self, game_id: str) -> GameState:
         with self._lock(game_id):
             session = self._require(game_id)
-            self._games[game_id] = Session(human_color=session.human_color)
-            return self.snapshot(game_id)
+            # `restart()` chứ không tạo `Session` mới: tạo mới sẽ âm thầm mất
+            # `on_move` — hook mà #3B cắm engine vào.
+            session.restart()
+            return self._snapshot(game_id)
 
     def pgn_text(self, game_id: str) -> str:
-        return self._require(game_id).pgn()
+        with self._lock(game_id):
+            return self._require(game_id).pgn()
+
+    def _drop(self, game_id: str) -> None:
+        """Bỏ một ván khỏi bộ nhớ. Phải giữ `_guard` (không reentrant)."""
+        self._games.pop(game_id, None)
+        self._locks.pop(game_id, None)
+        if game_id in self._order:
+            self._order.remove(game_id)
 
     def _require(self, game_id: str) -> Session:
         try:

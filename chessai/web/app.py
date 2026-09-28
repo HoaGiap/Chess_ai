@@ -14,9 +14,10 @@ from pydantic import BaseModel
 from ..position import MoveError
 from .games import GameNotFound, GameStore
 
-# Không khai báo charset thì trình duyệt giải mã file theo locale, và byte
-# tiếng Việt vỡ thành ký tự phá vỡ chuỗi -> SyntaxError ngay trong app.js.
-# Cần thiết vì toàn bộ giao diện đều là tiếng Việt có dấu.
+# Ghi charset UTF-8 tường minh cho file tĩnh. `mimetypes` mặc định trả
+# "application/javascript" không charset; dù module script theo HTML spec vẫn
+# luôn là UTF-8, nói rõ ra thì không còn phụ thuộc trình duyệt đoán, và file .css
+# (không phải module) thì cần.
 mimetypes.add_type("text/javascript; charset=utf-8", ".js")
 mimetypes.add_type("text/css; charset=utf-8", ".css")
 mimetypes.add_type("image/svg+xml; charset=utf-8", ".svg")

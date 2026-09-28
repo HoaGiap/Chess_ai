@@ -36,6 +36,16 @@ class Session:
         # (người thắng hoặc None, lý do bằng tiếng Việt) khi kết thúc bằng tuyên bố.
         self._declared: tuple[Color | None, str] | None = None
 
+    def restart(self) -> None:
+        """Bắt đầu ván mới nhưng GIỮ nguyên `human_color`, `elo`, `style`,
+        `mode` và `on_move`.
+
+        Không được tạo `Session` mới thay chỗ: `on_move` là chỗ #3B cắm engine
+        vào, mất nó thì bấm "Ván mới" sẽ âm thầm tắt AI.
+        """
+        self.position = Position()
+        self._declared = None
+
     def is_human_turn(self) -> bool:
         if self.human_color is None:
             return True

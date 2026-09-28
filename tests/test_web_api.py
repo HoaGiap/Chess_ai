@@ -18,6 +18,7 @@ import unittest
 
 from chessai.web.app import STATIC_DIR, MoveRequest, create_app
 from chessai.web.games import GameStore
+from chessai.web.schema import GameState, MoveOption
 
 
 def match_endpoint(application, method: str, path: str):
@@ -181,6 +182,60 @@ class TestStaticContentType(unittest.TestCase):
         # assertRegex nhận (text, regex, msg) — cờ phải nằm trong chính regex,
         # truyền re.MULTILINE vào tham số thứ ba chỉ là đổi thông điệp.
         self.assertRegex(script, re.compile(r"^\s*apply\(await ", re.MULTILINE))
+
+
+class TestOpenApiContract(unittest.TestCase):
+    """Review: `match_endpoint` gọi thẳng handler, bỏ qua định tuyến và parse
+    body — nên đổi đường dẫn hay đổi tên field trong pydantic thì 20 test vẫn
+    xanh còn app thật thì hỏng. Ở đây khoá đúng bằng hợp đồng OpenAPI.
+    """
+
+    def setUp(self) -> None:
+        self.paths = create_app(GameStore()).openapi()["paths"]
+
+    def _operations(self, path: str) -> set[str]:
+        return set(self.paths[path])
+
+    def test_every_route_the_client_uses_exists(self) -> None:
+        for path in (
+            "/",
+            "/api/game",
+            "/api/game/{game_id}",
+            "/api/game/{game_id}/move",
+            "/api/game/{game_id}/undo",
+            "/api/game/{game_id}/new",
+            "/api/game/{game_id}/pgn",
+        ):
+            with self.subTest(path=path):
+                self.assertIn(path, self.paths)
+
+    def test_create_and_read_use_the_right_methods(self) -> None:
+        self.assertEqual(self._operations("/api/game"), {"post"})
+        self.assertEqual(self._operations("/api/game/{game_id}"), {"get"})
+        self.assertEqual(self._operations("/api/game/{game_id}/pgn"), {"get"})
+
+    def test_actions_use_post(self) -> None:
+        for path in ("move", "undo", "new"):
+            with self.subTest(path=path):
+                self.assertEqual(
+                    self._operations(f"/api/game/{{game_id}}/{path}"), {"post"}
+                )
+
+    def test_move_body_is_validated_from_a_plain_dict(self) -> None:
+        """Không dựng MoveRequest trong test — để nó phải đi qua pydantic thật."""
+        request = MoveRequest.model_validate({"san": "e4"})
+        self.assertEqual(request.san, "e4")
+        with self.assertRaises(Exception):
+            MoveRequest.model_validate({"buoc_di": "e4"})
+
+    def test_promotion_and_check_square_reach_the_wire(self) -> None:
+        """Tên field phải khớp thứ app.js đọc."""
+        for name in ("check_square", "legal", "check", "over", "last_from", "last_to"):
+            with self.subTest(model="GameState", field=name):
+                self.assertIn(name, GameState.model_fields)
+        for name in ("from_sq", "to_sq", "san", "capture", "promotion"):
+            with self.subTest(model="MoveOption", field=name):
+                self.assertIn(name, MoveOption.model_fields)
 
 
 if __name__ == "__main__":
