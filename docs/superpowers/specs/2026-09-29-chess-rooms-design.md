@@ -226,4 +226,5 @@ vậy kiểm bằng trình duyệt thật:
 | Phòng nằm trong RAM | Máy chủ khởi động lại là mất hết phòng | Ghi rõ trong phòng chờ. Sửa được sau bằng SQLite |
 | **Chỉ chạy được trong MỘT tiến trình máy chủ** | Chạy `--workers 2` thì hai người vào phòng khác tiến trình sẽ không thấy nhau | Ghi rõ trong `__main__.py` và README. Cần khoá dùng chung (Redis/Postgres) mới chạy nhiều tiến trình |
 | Không có đăng nhập | Ai có mã người chơi của người khác thì vào được phòng | Chấp nhận được cho dự án cá nhân; mã người chơi không nằm trong URL nên không rò qua lịch sử trình duyệt |
+| **Mã phòng KHÔNG phải bí mật** — nó chỉ che mờ | 8 ký tự từ 31 ký hiệu ≈ 2^40, đoán mò thì được nhưng rất chậm; và ai đoán trúng cũng chỉ vào được phòng đang **chờ** | Đây là cố ý. Bí mật thật là **mã người chơi** (2^128), nằm trong `localStorage` và không nằm trong URL. Nếu sau này cần phòng kín thật sự thì phải thêm mật khẩu phòng, không phải làm dài mã phòng |
 | Máy chủ tắt giữa ván | Ván mất | Tương tự `GameStore`, đã nói rõ từ #3A |
