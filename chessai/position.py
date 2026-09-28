@@ -191,6 +191,43 @@ class Position:
         note = _en_passant_note(self._board, san) + _castle_notation_note(san)
         return f"'{san}' không hợp lệ: {reason}{note}"
 
+    def outcome(self) -> chess.Outcome | None:
+        """Kết quả ván, hoặc None nếu ván còn đi.
+
+        Kiểm theo thứ tự ưu tiên của luật (spec §6). Không dùng
+        `Board.is_game_over()` / `Board.outcome()` vì chúng coi lặp thế 3 lần
+        và 50 nước là quyền tuyên bố của người đến lượt, trái với spec:
+        ở đây lặp 3 lần tự kết thúc, còn 50 nước thì chỉ báo nhắc.
+        """
+        b = self._board
+        if b.is_checkmate():
+            return chess.Outcome(termination=chess.Termination.CHECKMATE, winner=not b.turn)
+        if b.is_stalemate():
+            return chess.Outcome(termination=chess.Termination.STALEMATE, winner=None)
+        if b.is_insufficient_material():
+            return chess.Outcome(termination=chess.Termination.INSUFFICIENT_MATERIAL, winner=None)
+        if b.is_seventyfive_moves():
+            return chess.Outcome(termination=chess.Termination.SEVENTYFIVE_MOVES, winner=None)
+        if b.is_repetition(3):
+            return chess.Outcome(termination=chess.Termination.THREEFOLD_REPETITION, winner=None)
+        return None
+
+    def is_game_over(self) -> bool:
+        return self.outcome() is not None
+
+    def termination_text(self) -> str:
+        outcome = self.outcome()
+        if outcome is None:
+            return "ván đang diễn ra"
+        reason = _TERMINATION_VN.get(outcome.termination, "kết thúc")
+        if outcome.winner is None:
+            return f"HÒA: {reason}"
+        return f"{'Trắng' if outcome.winner else 'Đen'} thắng: {reason}"
+
+    def can_claim_fifty_moves(self) -> bool:
+        """Luật 50 nước là quyền tuyên bố, không tự kết thúc ván."""
+        return self._board.can_claim_fifty_moves()
+
     def undo(self) -> None:
         if not self._board.move_stack:
             raise MoveError("Không có nước nào để lùi.")

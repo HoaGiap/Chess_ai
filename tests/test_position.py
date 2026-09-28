@@ -238,3 +238,83 @@ class TestUndo(unittest.TestCase):
     def test_undo_on_empty_raises(self) -> None:
         with self.assertRaises(MoveError):
             Position().undo()
+
+
+class TestGameEnd(unittest.TestCase):
+    """Vị trí lặp phải CÓ TỐT, nếu không sẽ dính insufficient_material."""
+
+    def test_checkmate(self) -> None:
+        """1. f3 e5 2. g4 Qh4# — thắng thì phải báo thắng, không báo hòa."""
+        pos = play(chess.STARTING_FEN, ["f3", "e5", "g4", "Qh4"])
+        self.assertTrue(pos.is_game_over())
+        self.assertEqual(pos.outcome().termination, chess.Termination.CHECKMATE)
+        self.assertEqual(pos.outcome().winner, chess.BLACK)
+        self.assertIn("Đen thắng", pos.termination_text())
+        self.assertIn("chiếu hết", pos.termination_text())
+
+    def test_stalemate_is_draw_not_checkmate(self) -> None:
+        pos = Position("7k/5Q2/6K1/8/8/8/8/8 b - - 0 1")
+        self.assertTrue(pos.is_game_over())
+        self.assertEqual(pos.outcome().termination, chess.Termination.STALEMATE)
+        self.assertIsNone(pos.outcome().winner)
+        self.assertIn("bế tắc", pos.termination_text())
+
+    def test_insufficient_material(self) -> None:
+        for fen in (
+            "7k/8/8/8/8/8/8/K7 w - - 0 1",
+            "7k/8/8/8/8/8/8/K6N w - - 0 1",
+            "7k/8/8/8/8/8/8/KB6 w - - 0 1",
+        ):
+            with self.subTest(fen=fen):
+                pos = Position(fen)
+                self.assertTrue(pos.is_game_over())
+                self.assertEqual(
+                    pos.outcome().termination,
+                    chess.Termination.INSUFFICIENT_MATERIAL,
+                )
+
+    def test_king_bishop_knight_can_still_mate(self) -> None:
+        """KBN vẫn chiếu hết được — không được kết luận hòa sớm."""
+        pos = Position("7k/8/8/8/8/8/8/KBN5 w - - 0 1")
+        self.assertFalse(pos.is_game_over())
+
+    def test_threefold_repetition_ends_game(self) -> None:
+        pos = play(
+            "4k3/8/8/8/8/8/4P3/4K1N1 w - - 0 1",
+            ["Nf3", "Kd7", "Ng1", "Ke8", "Nf3", "Kd7", "Ng1", "Ke8"],
+        )
+        self.assertTrue(pos.is_game_over())
+        self.assertEqual(
+            pos.outcome().termination, chess.Termination.THREEFOLD_REPETITION
+        )
+        self.assertIn("lặp thế cờ 3 lần", pos.termination_text())
+
+    def test_single_repetition_does_not_end_game(self) -> None:
+        pos = play("4k3/8/8/8/8/8/4P3/4K1N1 w - - 0 1", ["Nf3", "Kd7", "Ng1", "Ke8"])
+        self.assertFalse(pos.is_game_over())
+        self.assertIsNone(pos.outcome())
+
+    def test_seventyfive_moves_ends_automatically(self) -> None:
+        pos = Position("4k3/8/8/8/8/8/8/4K2R w K - 149 200")
+        pos.apply_san("Rh2")
+        self.assertTrue(pos.is_game_over())
+        self.assertEqual(
+            pos.outcome().termination, chess.Termination.SEVENTYFIVE_MOVES
+        )
+        self.assertIn("75", pos.termination_text())
+
+    def test_fifty_moves_is_only_claimable(self) -> None:
+        """Review Focus #4: ở bộ đếm 99 chỉ được BÁO, ván phải đi tiếp."""
+        pos = Position("4k3/8/8/8/8/8/8/4K2R w K - 99 100")
+        pos.apply_san("Rh2")
+        self.assertTrue(pos.can_claim_fifty_moves())
+        self.assertFalse(pos.is_game_over())
+        self.assertEqual(pos.termination_text(), "ván đang diễn ra")
+
+    def test_termination_text_while_running(self) -> None:
+        self.assertEqual(Position().termination_text(), "ván đang diễn ra")
+
+    def test_ongoing_position_has_no_outcome(self) -> None:
+        pos = play(chess.STARTING_FEN, ["e4", "e5"])
+        self.assertIsNone(pos.outcome())
+        self.assertFalse(pos.is_game_over())
