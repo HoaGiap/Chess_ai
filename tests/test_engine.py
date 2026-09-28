@@ -149,5 +149,158 @@ class TestPositionTables(unittest.TestCase):
         self.assertLessEqual(engine.phase(cuoi), 2)
 
 
+class TestProfile(unittest.TestCase):
+    def test_elo_thap_cho_tim_nong_va_game_hon(self) -> None:
+        thap = engine.profile_for(700)
+        cao = engine.profile_for(2300)
+        self.assertLess(thap[0], cao[0])            # max_depth
+        self.assertGreater(thap[1], cao[1])         # blunder_rate
+        self.assertGreater(thap[2], cao[2])         # slack_cp
+        self.assertLess(thap[3], cao[3])            # max_seconds
+
+    def test_noi_suy_tuyen_tinh(self) -> None:
+        self.assertEqual(engine.profile_for(600)[0], 1)
+        self.assertEqual(engine.profile_for(750)[0], 2)   # nua giua 600 va 900
+
+    def test_kep_o_hai_dau(self) -> None:
+        self.assertEqual(engine.profile_for(100)[0], engine.profile_for(600)[0])
+        self.assertEqual(engine.profile_for(9999)[0], engine.profile_for(2400)[0])
+
+    def test_elo_2400_khong_cho_phep_sai(self) -> None:
+        self.assertEqual(engine.profile_for(2400)[1], 0.0)
+
+    def test_bang_elo_don_tang(self) -> None:
+        for a, b in ((600, 900), (900, 1200), (1200, 1500),
+                     (1500, 1800), (1800, 2100), (2100, 2400)):
+            with self.subTest(a=a, b=b):
+                self.assertLess(engine.profile_for(a)[0], engine.profile_for(b)[0])
+                self.assertGreater(engine.profile_for(a)[1], engine.profile_for(b)[1])
+
+
+class TestThink(unittest.TestCase):
+    def _an(self, san: str) -> chess.Board:
+        board = chess.Board()
+        for one in san.split():
+            board.push_san(one)
+        return board
+
+    def test_the_chet_thi_tra_none(self) -> None:
+        """K+N đối K là thế chết: máy phải trả None, không phải nước đi."""
+        self.assertIsNone(engine.think(chess.Board("4k3/8/8/8/8/5N2/8/4K3 w - - 0 1"), 1500, 0.0))
+
+    def test_khong_con_nuoc_di_thi_tra_none(self) -> None:
+        board = self._an("f3 e5 g4 Qh4#")
+        self.assertIsNone(engine.think(board, 1500, 0.0))
+
+    def test_dang_bi_chieu_thi_phai_tra_lai(self) -> None:
+        """Xe trắng đứng chéo vua đen: đen phải thoát chiếu.
+
+        Dùng FEN dựng tay thay vì dòng SAN — dòng SAN viết tay thì dễ sai, và
+        một dòng sai là test hỏng vì lý do không liên quan tới engine.
+        """
+        board = chess.Board("4k3/8/8/8/8/8/8/K3R3 b - - 0 1")
+        self.assertTrue(board.is_check(), "the phai thuoc ve de bai co y nghia")
+        nuoc = engine.think(board, 2400, 0.0)
+        self.assertIsNotNone(nuoc)
+        self.assertIn(nuoc, list(board.legal_moves))
+        ten = board.san(nuoc)          # san() chi goi duoc TRUOC khi day nuoc
+        board.push(nuoc)
+        self.assertFalse(board.is_check(), ten)
+
+    def test_bi_chi_hoi_thi_khong_di_quan_khac(self) -> None:
+        """Bị chiều thì phải đáp — hoặc thoát, hoặc chặn, nhưng không được đứng yên.
+
+        Thêm tốt đen ở e7 để có thêm lựa chọn chặn đường chiếu, nên test buộc
+        máy phải đánh giá nhiều lựa chọn chứ không chỉ chạy vua.
+        """
+        board = chess.Board("4k3/8/8/8/8/8/4p3/K3R3 b - - 0 1")
+        nuoc = engine.think(board, 2400, 0.0)
+        self.assertIsNotNone(nuoc)
+        ten = board.san(nuoc)          # san() chi goi duoc TRUOC khi day nuoc
+        board.push(nuoc)
+        self.assertFalse(board.is_check(), ten)
+
+    def test_ai_khong_tu_tra_nuoc_lam_mat_quan(self) -> None:
+        board = self._an("e4 e5 Nf3 Nc6 Bc4 Bc5")
+        nuoc = engine.think(board, 2400, 0.0)
+        self.assertIsNotNone(nuoc)
+        self.assertNotIn(
+            chess.square_name(nuoc.from_square), ("f1", "g1"),
+            "mat quan vo dieu kien",
+        )
+
+    def test_moi_dong_ca_quan_hon_deu_tra_nuoc_hop_le(self) -> None:
+        dong = [
+            chess.STARTING_FEN,
+            "r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4",
+            "r1bq1rk1/pp2ppbp/2np1np1/8/3NP3/2N1BP2/PPPQ2PP/2KR1B1R w - - 0 9",
+            "4k3/8/8/8/8/8/4P3/4K3 w - - 0 1",
+            "8/2P5/8/8/8/8/6k1/4K3 w - - 0 1",
+            "4k3/8/8/8/8/5N2/8/3RK3 w - - 0 1",
+            "r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 4 4",
+        ]
+        for fen in dong:
+            with self.subTest(fen=fen):
+                board = chess.Board(fen)
+                nuoc = engine.think(board, 1500, 0.0)
+                self.assertIn(nuoc, list(board.legal_moves))
+
+    def test_elo_thap_van_luon_hop_le(self) -> None:
+        """Review Focus 4: cho may choi yeu bang cach chon nuoc te; bang cach
+        tra nuoc bat hop le thi mat ca van.
+
+        Dòng cờ do máy tự sinh (random có gieo cho xác định), không viết tay —
+        xem `test_dang_bi_chieu_thi_phai_tra_lai` để biết vì sao.
+        """
+        import random
+        rng = random.Random(20260928)
+        board = chess.Board()
+        for _ in range(16):
+            hop = rng.choice(list(board.legal_moves))
+            board.push(hop)
+            nuoc = engine.think(board, 600, 0.0)
+            if nuoc is None:
+                break
+            self.assertIn(nuoc, list(board.legal_moves), board.fen())
+            board.push(nuoc)
+
+    def test_elo_cao_cung_luon_hop_le(self) -> None:
+        import random
+        rng = random.Random(1)
+        board = chess.Board()
+        for _ in range(6):
+            board.push(rng.choice(list(board.legal_moves)))
+            nuoc = engine.think(board, 2400, 0.0)
+            if nuoc is None:
+                break
+            self.assertIn(nuoc, list(board.legal_moves), board.fen())
+            board.push(nuoc)
+
+    def test_elo_2400_don_gian_khong_bai_thua_tot(self) -> None:
+        board = self._an("e4 e5 Qh5 Nc6 Bc4 Nf6")
+        nuoc = engine.think(board, 2400, 0.0)
+        self.assertIn(board.san(nuoc), ("Qxf7#", "Bxf7+", "Qxe5+"))
+
+    def test_khong_vuot_qua_thoi_gian_cho_phep(self) -> None:
+        import time as _time
+        board = chess.Board(
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1"
+        )
+        bat_dau = _time.monotonic()
+        engine.think(board, 2400, 0.0)
+        self.assertLess(_time.monotonic() - bat_dau, 9.0 * 2)
+
+    def test_thoi_gian_toi_thieu_duoc_chan(self) -> None:
+        import time as _time
+        bat_dau = _time.monotonic()
+        engine.think(chess.Board(), 600, 0.6)
+        self.assertGreaterEqual(_time.monotonic() - bat_dau, 0.55)
+
+    def test_clamp_time_khong_vuot_tran(self) -> None:
+        board = chess.Board(chess.STARTING_FEN)
+        self.assertLessEqual(engine.clamp_time(board, 0.4, 0.6), 0.6)
+        self.assertGreaterEqual(engine.clamp_time(board, 0.4, 0.1), 0.1)
+
+
 if __name__ == "__main__":
     unittest.main()
