@@ -102,12 +102,14 @@ class GameState(BaseModel):
     over: bool
     result_text: str
     moves: list[str]
-    captured_by_white: list[str]   # quân MÀ PHE TRẮNG đã bắt (ký hiệu quân đen)
-    captured_by_black: list[str]   # quân MÀ PHE ĐEN đã bắt (ký hiệu quân trắng)
+    captured_by_white: list[str]   # quân phe TRẮNG đã bắt — chữ HOA (quân Đen bị ăn)
+    captured_by_black: list[str]   # quân phe ĐEN đã bắt — chữ HOA (quân Trắng bị ăn)
     can_undo: bool
 ```
 
-Tên `captured_by_*` dùng theo góc nhìn **người bắt**, không phải người bị bắt. Bảng thông tin hiện chúng ở hàng của phe tương ứng.
+Tên `captured_by_*` dùng theo góc nhìn **người bắt**. Chữ cái loại quân luôn viết **HOA** kể cả quân Trắng, để trình duyệt không phải đoán màu — quân bị ăn luôn mang màu đối phương với người bắt, nên chỉ cần `b{P}` trong thư mục `pieces/`.
+
+**Không dùng `Board.captured_pieces`** — bản `python-chess` đang cài **không có thuộc tính này** (đã kiểm: `AttributeError: 'Board' object has no attribute 'captured_pieces'`). Phải quét `move_stack` thủ công: với mỗi nước đi, nếu `board.is_capture(move)` thì lấy quân tại `to_square`; riêng bắt tốt qua đường thì quân bị ăn nằm ở ô **lùi 1 hàng về phía phe bắt** (kiểm chạy thật: `exd6` có `to_square=d6`, quân bị ăn ở `d5`).
 
 **`legal` là `MoveOption`, không phải chuỗi SAN.** Trình duyệt cần khớp cú bấm chuột (ô nào → ô nào) với nước hợp lệ. Nếu chỉ gửi SAN thì trình duyệt phải tự phân tích SAN để biết ô đi và ô đến — tức là viết lại một phần luật cờ vua ở phía JS, đúng cái điều #3A cấm. Dạng `{from_sq, to_sq}` là **dữ liệu**, không phải luật: trình duyệt khớp chuỗi, không tự quyết đoán.
 
@@ -183,7 +185,11 @@ Ván nằm trong RAM nên **mất sạch khi restart**. Trình duyệt phải x�
 
 ## 6. Kiểm thử
 
-**Máy chủ — `unittest` + `fastapi.testclient.TestClient` (`httpx` đã có sẵn).** Không cài thêm test framework.
+**Máy chủ — `unittest` thuần, gọi trực tiếp handler.** `fastapi.testclient.TestClient` **không dùng được** vì máy này không có `httpx` (đã kiểm: `import httpx` → `ModuleNotFoundError`; thứ đang cài tên là `httpx2`, hoàn toàn khác). Cài `httpx` là thêm dependency, trái §2.
+
+Thay vào đó: route handler của FastAPI là hàm Python thường, nên test gọi thẳng `asyncio.run(handler(...))` rồi kiểm `JSONResponse.status_code` và `.body`. **Đã kiểm chạy thật** — cách này cho ra 400 kèm đúng thông điệp tiếng Việt.
+
+Còn một mảnh mà cách này không phủ: định tuyến URL và tuần tự hoá JSON. Mảng đó kiểm bằng trình duyệt thật ở mục kế tiếp.
 
 | Nhóm | Kiểm |
 |---|---|
@@ -197,6 +203,8 @@ Ván nằm trong RAM nên **mất sạch khi restart**. Trình duyệt phải x�
 | Mất ván | Xoá ván khỏi store rồi `GET` → 404 |
 | Mã `from_sq`/`to_sq` | Với `e2e4`, `MoveOption` đó có `from_sq=="e2"`, `to_sq=="e4"` |
 | Đồng bộ FEN | `POST move` với SAN hợp lệ rồi `GET` phải trả cùng FEN |
+| Đặc biệt | `MoveOption` cho `O-O` có `from_sq="e1"`, `to_sq="g1"`; cho `exd6` có `to_sq="d6"` và `capture=true`; cho `a8=Q` có `promotion=true` |
+| Quân bị bắt | Sau `e4 d5 exd5`, `captured_by_white == ["P"]`; sau `Qxd5`, `captured_by_black == ["P"]` |
 
 **Giao diện — không cài framework test JS.** Kiểm bằng trình duyệt thật: mở `localhost:8000`, đi vài nước, chụp màn hình, đọc console không có lỗi. Lý do: thêm Playwright/Cypress nghĩa là thêm dependency vào đúng dự án mà 3 câu trên vừa nói là không thêm gì. Đánh đổi được vì #3A chỉ có vài chức năng và kiểm thử thủ công có thật.
 
