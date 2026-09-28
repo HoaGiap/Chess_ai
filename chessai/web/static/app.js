@@ -23,6 +23,17 @@ const el = {
   topElo: document.getElementById("top-elo"),
   bottomElo: document.getElementById("bottom-elo"),
   setup: document.getElementById("setup"),
+  boardArea: document.getElementById("board-area"),
+  roomStatus: document.getElementById("room-status"),
+  roomCode: document.getElementById("room-code"),
+  roomCodeBig: document.getElementById("room-code-big"),
+  seatWhite: document.getElementById("seat-white"),
+  seatBlack: document.getElementById("seat-black"),
+  invite: document.getElementById("invite"),
+  roomNote: document.getElementById("room-note"),
+  startRoom: document.getElementById("start-room"),
+  roomList: document.getElementById("room-list"),
+  resign: document.getElementById("resign"),
   elo: document.getElementById("elo"),
   eloValue: document.getElementById("elo-value"),
 };
@@ -35,6 +46,13 @@ let busy = false;        // đang chờ máy chủ trả lời
 let aiThinking = false;  // #3B: máy đang tìm nước
 let pollTimer = null;    // #3B: hẹn giờ hỏi lại
 const picking = { color: "white", elo: 1200 };  // #3B: lựa chọn ở hộp thoại
+
+// ---- #3C: phòng chơi người thật ----
+let playerToken = localStorage.getItem("chessai-player") || "";
+let view = "home";           // "home" | "lobby" | "room" | "game"
+let room = null;             // RoomView hiện tại
+let socket = null;           // WebSocket
+let roomPollTimer = null;    // dự phòng khi WebSocket không mở được
 
 // Khoá bàn và nút trong lúc đang bay, để không gửi hai nước cùng lúc —
 // hai response tới lệch thứ tự thì trình duyệt lệch máy chủ vĩnh viễn.
@@ -53,10 +71,10 @@ function pieceUrl(ch) {
   return `/static/pieces/${white ? "w" : "b"}${ch.toUpperCase()}.svg`;
 }
 
-async function api(path, method, payload) {
-  const options = { method };
+async function api(path, method, payload, extraHeaders) {
+  const options = { method, headers: { ...(extraHeaders || {}) } };
   if (payload !== undefined) {
-    options.headers = { "Content-Type": "application/json" };
+    options.headers["Content-Type"] = "application/json";
     options.body = JSON.stringify(payload);
   }
   let response;
@@ -237,7 +255,9 @@ function paintPanel() {
   // hàng trên luôn là Đen, hàng dưới luôn là Trắng, còn máy có thể là phe
   // nào tuỳ người chơi chọn. Trước đây gắn theo `turn` nên khi người chơi
   // chọn phe Đen, nhãn hiện nhầm sang phe Trắng.
-  const coMay = state.human_color !== null;
+  // Trong phòng chơi người thật thì KHÔNG có máy: hiện "Elo 0" hay
+  // "AI đang nghĩ" là vô nghĩa. `is_room` đánh dấu trạng thái đó.
+  const coMay = state.human_color !== null && !state.is_room;
   const mayLaPheDen = state.human_color === "white";   // người chơi trắng → máy đen
   const mayDangNghi = aiThinking;
   const nhanhMay = mayDangNghi ? "AI đang nghĩ" : "Elo " + state.elo;
@@ -245,9 +265,8 @@ function paintPanel() {
   el.bottomElo.textContent = coMay && !mayLaPheDen ? nhanhMay : "";
   el.top.classList.toggle("thinking", coMay && mayLaPheDen && mayDangNghi);
   el.bottom.classList.toggle("thinking", coMay && !mayLaPheDen && mayDangNghi);
-  el.squares.classList.toggle(
-    "locked", coMay && (state.over || state.turn !== state.human_color),
-  );
+  const laLuotNguoi = state.human_color === null || state.turn === state.human_color;
+  el.squares.classList.toggle("locked", !laLuotNguoi || state.over);
   if (state.over) {
     el.message.textContent = state.result_text;
     el.message.classList.remove("error");
@@ -255,6 +274,8 @@ function paintPanel() {
 }
 
 function apply(next) {
+  // Phòng dùng applyRoomGame (có bàn xoay theo ghế), không đi qua đây.
+  if (view === "room" || view === "game") return;
   // Chỉ khi là VÁN MỚI mới tự đặt hướng bàn theo phe người chơi. Nếu đặt mỗi
   // nước đi thì nút "Lật bàn" sẽ bị ghi đè ngay lần sau — mà người chơi cần
   // xem ngược lại bàn khi đấu máy.
@@ -345,6 +366,7 @@ function showPicker(options, target) {
 
 async function send(san) {
   if (busy) return;           // đang bay: bỏ qua, nếu không sẽ gửi 2 nước
+  if (view === "room" || view === "game") { await guiNuocPhong(san); return; }
   busy = true;
   lockUi(true);
   try {
@@ -365,7 +387,9 @@ el.squares.addEventListener("click", (event) => {
   // Review Focus 5: bấm vào quân của máy thì không được hiện chấm tròn nào,
   // cũng không được gửi gì lên máy chủ.
   if (state.human_color !== null && state.turn !== state.human_color) {
-    say("Đến lượt máy.");
+    say(
+      view === "game" ? "Chưa đến lượt bạn." : "Đến lượt máy."
+    );
     return;
   }
   const name = sq.dataset.sq;
@@ -493,6 +517,272 @@ document.getElementById("start").addEventListener("click", async () => {
   }
 });
 
+
+// ---- #3C: phòng chơi người thật ------------------------------------------------
+// Máy chủ giữ toàn bộ luật cờ vua. Trình duyệt ở đây chỉ khớp chuỗi với
+// RoomState mà máy chủ gửi xuống: `data.room` (ghế, trạng thái) và
+// `data.game` (đúng GameState mà #3A đã dùng).
+
+async function apiRoom(path, method = "GET", payload) {
+  if (!playerToken) {
+    playerToken = (await api("/api/me", "GET")).player;
+    localStorage.setItem("chessai-player", playerToken);
+  }
+  return api(path, method, payload, { "X-Player": playerToken });
+}
+
+function showView(ten) {
+  view = ten;
+  for (const id of ["home", "lobby", "room"]) {
+    document.getElementById("view-" + id).hidden = id !== ten;
+  }
+  for (const b of document.querySelectorAll("#tabs button")) {
+    b.classList.toggle("on", b.dataset.view === (ten === "game" ? "lobby" : ten));
+  }
+  const vanPhong = ten === "room" || ten === "game";
+  el.setup.hidden = true;
+  el.undo.hidden = vanPhong;          // C4: trong phòng không lùi nước
+  el.resign.hidden = !vanPhong;
+  el.roomStatus.hidden = !vanPhong;
+}
+
+function renderRoom() {
+  if (!room) return;
+  el.roomCodeBig.textContent = room.id;
+  el.seatWhite.textContent = room.white ? "có người" : "trống";
+  el.seatBlack.textContent = room.black ? "có người" : "trống";
+  el.invite.value = location.origin + "/?room=" + room.id;
+  const laHost = room.host === playerToken;
+  const duHai = !!(room.white && room.black);
+  el.startRoom.disabled = room.started || !(laHost && duHai);
+  el.startRoom.textContent = room.started ? "Ván đang đấu" : "Bắt đầu";
+  const ghe = room.you === "white" ? "Trắng" : room.you === "black" ? "Đen" : null;
+  if (!ghe) {
+    el.roomNote.textContent = "Bạn đang xem phòng của người khác — chỉ quan sát được.";
+  } else if (room.started) {
+    el.roomNote.textContent = `Bạn đang đánh phe ${ghe}.`;
+  } else if (laHost) {
+    el.roomNote.textContent = "Bạn là người tạo phòng — chờ đối thủ rồi bấm Bắt đầu.";
+  } else {
+    el.roomNote.textContent = "Chờ người tạo phòng bấm Bắt đầu.";
+  }
+}
+
+function renderLobby(danh) {
+  el.roomList.innerHTML = "";
+  if (danh.length === 0) {
+    const li = document.createElement("li");
+    li.className = "empty";
+    li.textContent = "Chưa có phòng nào. Bấm “Tạo phòng” để mở một phòng.";
+    el.roomList.appendChild(li);
+    return;
+  }
+  for (const r of danh) {
+    const li = document.createElement("li");
+    const ma = document.createElement("span");
+    ma.className = "ma";
+    ma.textContent = r.id;
+    const trang = document.createElement("span");
+    trang.className = "trang";
+    trang.textContent = r.status;
+    const nut = document.createElement("button");
+    nut.textContent = "Vào";
+    // Đã đủ hai người, hoặc chính mình đã ngồi trong đó, thì không vào được.
+    nut.disabled = (!!(r.white && r.black)) &&
+      (r.white === playerToken || r.black === playerToken);
+    nut.addEventListener("click", () => vaoPhong(r.id));
+    li.append(ma, trang, nut);
+    el.roomList.appendChild(li);
+  }
+}
+
+function closeSocket() {
+  if (!socket) return;
+  try { socket.close(); } catch { /* đang đóng rồi */ }
+  socket = null;
+}
+
+function stopRoomPoll() {
+  if (roomPollTimer) { clearInterval(roomPollTimer); roomPollTimer = null; }
+}
+
+function startRoomPoll() {
+  stopRoomPoll();
+  roomPollTimer = setInterval(async () => {
+    if (view !== "room" && view !== "game") return;
+    try {
+      room = await apiRoom(`/api/rooms/${room.id}`, "GET");
+      renderRoom();
+    } catch (error) {
+      say(error.message, true);
+    }
+  }, 1000);
+}
+
+function openSocket(roomId) {
+  closeSocket();
+  if (!playerToken) return;
+  const ws = new WebSocket(
+    `${location.origin.replace(/^http/, "ws")}/ws/room/${roomId}` +
+    `?p=${encodeURIComponent(playerToken)}`
+  );
+  socket = ws;
+  ws.onmessage = (e) => {
+    let msg;
+    try { msg = JSON.parse(e.data); } catch { return; }
+    if (msg.type !== "state") return;
+    room = msg.data.room;
+    // Chưa bắt đầu thì chỉ vẽ bàn (thế xuất phát), GIỮ NGUYÊN màn phòng chờ.
+    // `applyRoomGame` sẽ chuyển sang màn chơi nên không gọi ở đây.
+    if (msg.data.game) applyRoomGame(msg.data, !room.started);
+    renderRoom();
+  };
+  ws.onopen = () => stopRoomPoll();
+  ws.onclose = () => {
+    socket = null;
+    if (view === "room" || view === "game") startRoomPoll();
+  };
+  ws.onerror = () => { /* onclose sẽ lo */ };
+}
+
+function applyRoomGame(data, giuManCho = false) {
+  const g = data.game;
+  // Ván đã bắt đầu: ẩn bảng phòng chờ và hiện bàn cờ. Thiếu dòng này thì
+  // `view` kẹt ở "room" — bảng phòng chờ vẫn nằm trên bàn, và thông báo
+  // "sai lượt" rơi vào nhánh dành cho đấu máy.
+  if (!giuManCho) showView("game");
+  // Bàn xoay theo ghế của người chơi, giống chế độ đấu máy.
+  if (data.room.you === "black") orientation = "b";
+  else if (data.room.you === "white") orientation = "w";
+  state = { ...g, human_color: data.room.you, elo: 0, thinking: false,
+            is_room: true };
+  selected = null;
+  hidePicker();
+  buildSquares();
+  const cells = boardFromFen(state.fen);
+  paintPieces(cells);
+  paintBoard(cells);
+  paintPanel();
+  showInUrl(null);
+  el.roomStatus.hidden = false;
+  const ketNoi = data.room.opponent_connected !== false;
+  if (!data.room.started) {
+    // Chưa bắt đầu thì nói "Đến lượt bạn" là sai — còn chưa có lượt nào cả.
+    el.roomStatus.textContent = "";
+  } else if (state.over) {
+    el.roomStatus.textContent = state.result_text;
+  } else if (state.turn === data.room.you) {
+    el.roomStatus.textContent = "Đến lượt bạn.";
+  } else {
+    el.roomStatus.textContent = ketNoi ? "Đến lượt đối thủ." : "Đối thủ đang mất kết nối.";
+  }
+  el.roomStatus.classList.toggle("warn", data.room.started && !state.over && !ketNoi);
+}
+
+async function vaoPhong(roomId) {
+  try {
+    room = await apiRoom(`/api/rooms/${roomId}/join`, "POST");
+    const url = new URL(location.href);
+    url.searchParams.set("room", roomId);
+    url.searchParams.delete("g");
+    history.replaceState(null, "", url);
+    showView("room");
+    renderRoom();
+    openSocket(roomId);
+  } catch (error) {
+    say(error.message, true);
+    if (view !== "home") showView("lobby");
+    taiDanhSach();
+  }
+}
+
+async function moPhong() {
+  try {
+    const { room_id } = await apiRoom("/api/rooms", "POST");
+    await vaoPhong(room_id);
+  } catch (error) {
+    say(error.message, true);
+  }
+}
+
+async function taiDanhSach() {
+  try {
+    renderLobby((await apiRoom("/api/rooms", "GET")).rooms);
+  } catch (error) {
+    say(error.message, true);
+  }
+}
+
+async function guiNuocPhong(san) {
+  try {
+    const data = await apiRoom(`/api/rooms/${room.id}/move`, "POST", { san });
+    say("");
+    applyRoomGame(data);
+  } catch (error) {
+    say(error.message, true);   // bàn KHÔNG đổi
+  }
+}
+
+document.getElementById("tabs").addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-view]");
+  if (!b) return;
+  if (b.dataset.view === "lobby") { showView("lobby"); taiDanhSach(); return; }
+  closeSocket();
+  stopRoomPoll();
+  room = null;
+  showView("home");
+});
+
+document.getElementById("play-rooms").addEventListener("click", () => {
+  showView("lobby");
+  taiDanhSach();
+});
+document.getElementById("play-ai").addEventListener("click", () => {
+  el.setup.hidden = false;
+});
+document.getElementById("play-both").addEventListener("click", async () => {
+  try {
+    const next = await api("/api/game", "POST");
+    showView("game");
+    apply(next);
+  } catch (error) {
+    say(error.message, true);
+  }
+});
+
+document.getElementById("make-room").addEventListener("click", moPhong);
+document.getElementById("join-code").addEventListener("click", () => {
+  const code = el.roomCode.value.trim().toLowerCase();
+  if (code) vaoPhong(code);
+});
+document.getElementById("start-room").addEventListener("click", async () => {
+  try {
+    room = await apiRoom(`/api/rooms/${room.id}/start`, "POST");
+    say("");
+    renderRoom();
+  } catch (error) {
+    say(error.message, true);
+  }
+});
+document.getElementById("copy-invite").addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText(el.invite.value);
+    say("Đã sao chép link phòng.");
+  } catch {
+    el.invite.select();
+    say("Không tự sao chép được — bạn copy ô link bên trên.");
+  }
+});
+el.resign.addEventListener("click", async () => {
+  if (view !== "game") return;
+  try {
+    const data = await apiRoom(`/api/rooms/${room.id}/resign`, "POST");
+    applyRoomGame(data);
+  } catch (error) {
+    say(error.message, true);
+  }
+});
+
 const themeButton = document.getElementById("theme");
 function setTheme(theme) {
   document.documentElement.dataset.theme = theme;
@@ -509,7 +799,8 @@ else if (window.matchMedia("(prefers-color-scheme: light)").matches) setTheme("l
 // Nhờ vậy F5 không mất ván, và copy link sang máy khác cũng vào đúng ván.
 function showInUrl(gameId) {
   const url = new URL(location.href);
-  url.searchParams.set("g", gameId);
+  if (gameId) url.searchParams.set("g", gameId);
+  else url.searchParams.delete("g");
   history.replaceState(null, "", url);
 }
 
@@ -527,8 +818,22 @@ async function loadOrCreateGame() {
 }
 
 buildSquares();
-try {
-  apply(await loadOrCreateGame());
-} catch (error) {
-  say(error.message, true);
+
+const roomTrongUrl = new URLSearchParams(location.search).get("room");
+if (roomTrongUrl) {
+  showView("room");
+  try {
+    room = await apiRoom(`/api/rooms/${roomTrongUrl}`, "GET");
+    await vaoPhong(roomTrongUrl);
+  } catch (error) {
+    say(error.message, true);
+    showView("home");
+  }
+} else {
+  showView("home");
+  try {
+    apply(await loadOrCreateGame());
+  } catch (error) {
+    say(error.message, true);
+  }
 }

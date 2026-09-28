@@ -8,7 +8,7 @@
 </head>
 <body>
 <main class="app">
-  <section class="board-area">
+  <section class="board-area" id="board-area">
     <div class="board" id="board">
       <div class="squares" id="squares"></div>
       <div class="pieces" id="pieces"></div>
@@ -20,6 +20,47 @@
       <span class="brand">Chess_ai</span>
       <button id="theme" class="icon-btn" title="Đổi nền sáng/tối">&#9680;</button>
     </header>
+
+    <nav class="tabs" id="tabs">
+      <button data-view="home" class="on">Chơi</button>
+      <button data-view="lobby">Phòng</button>
+    </nav>
+
+    <section class="view" id="view-home">
+      <div class="home">
+        <button id="play-ai" class="primary">Chơi với máy</button>
+        <button id="play-rooms">Chơi với người</button>
+        <button id="play-both">Hai bên</button>
+      </div>
+    </section>
+
+    <section class="view" id="view-lobby" hidden>
+      <div class="lobby">
+        <button id="make-room" class="primary">Tạo phòng</button>
+        <div class="join-row">
+          <input id="room-code" placeholder="mã phòng" maxlength="8" autocomplete="off">
+          <button id="join-code">Vào</button>
+        </div>
+        <ul class="room-list" id="room-list"></ul>
+      </div>
+    </section>
+
+    <section class="view" id="view-room" hidden>
+      <div class="waiting">
+        <p class="room-code" id="room-code-big">—</p>
+        <ul class="seats">
+          <li><span class="dot white"></span> Trắng: <b id="seat-white">trống</b></li>
+          <li><span class="dot black"></span> Đen: <b id="seat-black">trống</b></li>
+        </ul>
+        <div class="invite-row">
+          <input id="invite" readonly aria-label="link phòng">
+          <button id="copy-invite">Sao chép link</button>
+        </div>
+        <p class="note" id="room-note"></p>
+        <button id="start-room" class="primary" disabled>Bắt đầu</button>
+      </div>
+    </section>
+
     <div class="player" id="player-top">
       <span class="dot black"></span>
       <div>
@@ -39,9 +80,11 @@
       <span class="captured" id="bottom-captured"></span>
     </div>
     <p class="message" id="message"></p>
+    <p class="room-status" id="room-status" hidden></p>
     <ol class="moves" id="moves"></ol>
     <div class="actions">
       <button id="undo">Lùi 1 lượt</button>
+      <button id="resign" hidden>Đầu hàng</button>
       <button id="flip">Lật bàn</button>
       <button id="pgn">Tải PGN</button>
       <button id="new" class="primary">Ván mới</button>

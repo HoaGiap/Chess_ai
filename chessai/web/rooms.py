@@ -257,7 +257,6 @@ class RoomStore:
             # phải tự bấm "Vào" mới chơi được — lúc đó "người tạo phòng" chỉ là
             # một nhãn, và một người lạ có thể ngồi ghế Trắng trước họ.
             room.white = host_token
-            room.connected.add(host_token)
             self._rooms[room_id] = room
             self._locks[room_id] = threading.Lock()
             self._order.append(room_id)
@@ -278,7 +277,10 @@ class RoomStore:
                     room.black = token
                 else:
                     raise Full()
-                room.connected.add(token)
+                # KHÔNG đánh dấu `connected` ở đây: cờ đó có nghĩa là "đang có
+                # WebSocket sống", nên chỉ lớp WebSocket được quyết định. Nếu
+                # đánh dấu lúc vào phòng thì người vào bằng link mà WebSocket
+                # hỏng sẽ không bao giờ thấy cảnh báo mất kết nối.
                 view = self._view(room, token)
         self._notify(room_id)
         return view

@@ -37,7 +37,6 @@ class TestGhe(unittest.TestCase):
         self.assertEqual(view.white, AL)
         self.assertIsNone(view.black)
         self.assertEqual(view.host, AL)
-        self.assertTrue(view.connected)
         self.assertFalse(view.started)
         self.assertEqual(view.you, "white")
         self.assertEqual(view.status, "Chờ đối thủ")
@@ -183,7 +182,15 @@ class TestChoiThat(unittest.TestCase):
         )
 
     def test_trang_thai_ket_noi(self) -> None:
+        """`connected` = ĐANG CÓ WebSocket sống, không phải "đã vào phòng".
+
+        Vào phòng bằng link mà WebSocket hỏng thì vẫn chơi được, nhưng người
+        kia phải thấy cảnh báo mất kết nối — nên cờ này chỉ lớp WebSocket được
+        bật.
+        """
         rooms, rid = self._hai_nguoi()
+        self.assertFalse(rooms.view(rid, AL).connected)   # chưa có WebSocket
+        rooms.set_connected(rid, AL, True)
         self.assertTrue(rooms.view(rid, AL).connected)
         rooms.set_connected(rid, AL, False)
         self.assertFalse(rooms.view(rid, AL).connected)
@@ -192,6 +199,8 @@ class TestChoiThat(unittest.TestCase):
         """`connected` là của chính người gọi; `opponent_connected` mới là của
         đối thủ — nhầm hai cái thì mất kết nối của nhau sẽ không bao giờ hiện."""
         rooms, rid = self._hai_nguoi()
+        rooms.set_connected(rid, AL, True)
+        rooms.set_connected(rid, BL, True)
         self.assertTrue(rooms.view(rid, AL).opponent_connected)
         rooms.set_connected(rid, BL, False)
         self.assertFalse(rooms.view(rid, AL).opponent_connected)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import mimetypes
 import secrets
 from contextlib import asynccontextmanager
@@ -204,16 +205,23 @@ def create_app(
             return
 
         await websocket.accept()
-        phong.set_connected(room_id, token, True)
+        loop = asyncio.get_running_loop()
 
-        async def day() -> None:
+        async def gui() -> None:
             await websocket.send_json(
                 {"type": "state", "data": _room_state(phong, room_id, token)}
             )
 
+        def day() -> None:
+            # RoomStore._notify gọi NGƯỜNG NGHE ĐỒNG BỘ, nên không thể truyền
+            # thẳng coroutine `gui` — sẽ tạo ra rồi vứt đi, và máy chủ in
+            # "coroutine was never awaited". Phải lênh chạy trên event loop.
+            asyncio.run_coroutine_threadsafe(gui(), loop)
+
+        phong.set_connected(room_id, token, True)
         phong.add_listener(room_id, day)
         try:
-            await day()
+            await gui()
             while True:
                 # Máy chủ KHÔNG nhận lệnh qua đây. Vòng lặp này chỉ để giữ
                 # kết nối mở và phát hiện client đã đóng.
@@ -259,11 +267,15 @@ def _token_of(x_player) -> str:
 
 
 def _room_state(phong: RoomStore, room_id: str, token: str) -> dict:
+    """Trạng thái phòng + ván, đẩy qua WebSocket.
+
+    `game` LUÔN có mặt, kể cả lúc phòng chưa bắt đầu: ván được tạo cùng lúc
+    với phòng, nên bàn cờ luôn hiện thế xuất phát. Nếu gửi `null` thì phòng
+    chờ có một bàn cờ TRỐNG — trông như trang hỏng.
+    """
     room = phong.view(room_id, token)
-    out = {"room": room.as_dict(), "game": None}
-    if room.started:
-        out["game"] = phong.games.snapshot(phong.game_id_of(room_id)).model_dump()
-    return out
+    game = phong.games.snapshot(phong.game_id_of(room_id)).model_dump()
+    return {"room": room.as_dict(), "game": game}
 
 
 def _van_moi_va_bat_dau_ai(games: GameStore, ai: AIController, game_id: str) -> dict:
