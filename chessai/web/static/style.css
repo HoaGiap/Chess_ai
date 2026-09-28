@@ -1,0 +1,127 @@
+/* Bảng màu theo spec: bàn cố định, vỏ ngoài đổi theo data-theme. */
+:root {
+  --sq-light: #eeeed2;
+  --sq-dark: #769656;
+  --label-light: #769656;
+  --label-dark: #eeeed2;
+  --last-move: rgba(255, 213, 74, .35);
+  --selected: #ffd54a;
+  --dot-light: rgba(30, 30, 30, .28);
+  --dot-dark: rgba(255, 255, 255, .55);
+  --capture-ring: rgba(255, 80, 80, .95);
+  --check: rgba(220, 60, 60, .55);
+  --page: #15171c;
+  --panel: #1e2229;
+  --border: #2c313b;
+  --fg: #e8e8e8;
+  --muted: rgba(232, 232, 232, .6);
+  --btn: #2a2f38;
+  --btn-border: #3a4150;
+  --btn-fg: #ddd;
+  --turn: #2b3542;
+}
+html[data-theme="light"] {
+  --page: #f2f2ef;
+  --panel: #ffffff;
+  --border: #dedcd5;
+  --fg: #22242a;
+  --muted: rgba(34, 36, 42, .6);
+  --btn: #eceae4;
+  --btn-border: #d6d3ca;
+  --btn-fg: #333;
+  --turn: #e8eefb;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 18px;
+  background: var(--page);
+  color: var(--fg);
+  font: 14px/1.5 system-ui, "Segoe UI", sans-serif;
+}
+
+.app { display: flex; gap: 16px; align-items: flex-start; max-width: 960px; margin: 0 auto; }
+.board-area { flex: 1 1 auto; min-width: 0; }
+
+.board {
+  position: relative;
+  width: min(640px, 100%);
+  aspect-ratio: 1;
+  margin: 0 auto;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+/* Hai lớp: ô vuông bên dưới, quân bên trên. Nhờ tách vậy quân trượt
+   bằng CSS transition chỉ cần đổi transform. */
+.squares, .pieces { position: absolute; inset: 0; display: grid; grid-template-columns: repeat(8, 1fr); }
+.squares { z-index: 1; }
+.pieces  { z-index: 2; pointer-events: none; }
+
+.sq { position: relative; }
+.sq.light { background: var(--sq-light); }
+.sq.dark  { background: var(--sq-dark); }
+.sq.last::before { content: ""; position: absolute; inset: 0; background: var(--last-move); }
+.sq.sel   { box-shadow: inset 0 0 0 4px var(--selected); }
+.sq.check { box-shadow: inset 0 0 0 4px var(--check); }
+
+.sq .dot  { position: absolute; inset: 37%; border-radius: 50%; }
+.sq.light .dot { background: var(--dot-light); }
+.sq.dark  .dot { background: var(--dot-dark); }
+.sq .ring { position: absolute; inset: 1%; border-radius: 50%; border: 4px solid var(--capture-ring); }
+
+.sq .coord { position: absolute; font-size: 11px; font-weight: 600; line-height: 1; opacity: .75; }
+.sq .coord.file { right: 3px; bottom: 2px; }
+.sq .coord.rank { left: 3px; top: 2px; }
+.sq.light .coord { color: var(--label-light); }
+.sq.dark  .coord { color: var(--label-dark); }
+
+/* Quân: kích thước cố định, CHỈ transform đổi nên transition chạy mượt. */
+.piece {
+  position: absolute;
+  width: 12.5%;
+  height: 12.5%;
+  transition: transform .15s ease;
+  will-change: transform;
+}
+.piece img { width: 100%; height: 100%; display: block; }
+
+.picker { position: absolute; z-index: 3; display: flex; flex-wrap: wrap; width: 12.5%; gap: 2px; }
+.picker button { flex: 1 1 45%; aspect-ratio: 1; border: 1px solid var(--border); background: var(--panel); border-radius: 3px; padding: 1px; cursor: pointer; }
+.picker img { width: 100%; height: 100%; }
+
+.panel { width: 260px; flex: none; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
+.panel-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.brand { font-weight: 700; letter-spacing: .02em; }
+.icon-btn { background: var(--btn); color: var(--btn-fg); border: 1px solid var(--btn-border); border-radius: 5px; width: 30px; height: 26px; cursor: pointer; }
+
+.player { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 6px; }
+.player.turn { background: var(--turn); }
+.player .dot { width: 11px; height: 11px; border-radius: 50%; border: 1px solid #888; flex: none; }
+.player .dot.white { background: #f2f2f2; }
+.player .dot.black { background: #3a3f4a; }
+.player div { display: flex; flex-direction: column; }
+.player small { color: var(--muted); font-size: 11px; }
+.captured { margin-left: auto; display: flex; gap: 1px; align-items: center; }
+.captured img { width: 15px; height: 15px; }
+
+.message { min-height: 20px; margin: 10px 0 6px; color: var(--muted); font-size: 13px; }
+.message.error { color: #ff8a80; }
+
+.moves { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: auto 1fr 1fr; gap: 1px 8px; font-size: 13px; max-height: 190px; overflow: auto; font-variant-numeric: tabular-nums; }
+.moves li { color: var(--muted); }
+.moves li.w, .moves li.b { color: var(--fg); }
+.moves li.now { background: var(--turn); border-radius: 3px; }
+
+.actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 12px; }
+.actions button { padding: 7px 8px; font-size: 13px; background: var(--btn); color: var(--btn-fg); border: 1px solid var(--btn-border); border-radius: 5px; cursor: pointer; }
+.actions button.primary { background: #4a7dd6; border-color: #4a7dd6; color: #fff; }
+.actions button:disabled { opacity: .45; cursor: not-allowed; }
+
+@media (max-width: 720px) {
+  .app { flex-direction: column; }
+  .panel { width: 100%; }
+  .moves { max-height: 120px; }
+}

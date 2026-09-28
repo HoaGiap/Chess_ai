@@ -12,10 +12,11 @@ Hai điều cần biết khi test kiểu này:
 """
 
 import json
+import mimetypes
 import re
 import unittest
 
-from chessai.web.app import MoveRequest, create_app
+from chessai.web.app import STATIC_DIR, MoveRequest, create_app
 from chessai.web.games import GameStore
 
 
@@ -149,6 +150,37 @@ class TestPgn(ApiTestCase):
 
     def test_pgn_of_unknown_id_returns_404(self) -> None:
         self.assertEqual(self.get("/api/game/khongco/pgn").status_code, 404)
+
+
+class TestStaticContentType(unittest.TestCase):
+    """Thiếu charset thì trình duyệt giải mã sai và app.js chết vì SyntaxError."""
+
+    def test_javascript_declares_utf8(self) -> None:
+        self.assertIn("charset=utf-8", mimetypes.guess_type("app.js")[0])
+
+    def test_css_declares_utf8(self) -> None:
+        self.assertIn("charset=utf-8", mimetypes.guess_type("style.css")[0])
+
+    def test_svg_declares_utf8(self) -> None:
+        self.assertIn("charset=utf-8", mimetypes.guess_type("wK.svg")[0])
+
+    def test_index_html_declares_utf8(self) -> None:
+        html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+        self.assertIn('<meta charset="utf-8">', html)
+
+    def test_app_js_is_loaded_as_a_module(self) -> None:
+        """app.js dùng top-level await nên phải nạp bằng type="module",
+        nếu không trình duyệt ném SyntaxError và trang trắng."""
+        html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+        self.assertIn('type="module"', html)
+        self.assertNotIn('<script src="/static/app.js">', html)
+
+    def test_app_js_really_uses_top_level_await(self) -> None:
+        """Nếu sau này bỏ top-level await thì xoá luôn type="module" ở test trên."""
+        script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+        # assertRegex nhận (text, regex, msg) — cờ phải nằm trong chính regex,
+        # truyền re.MULTILINE vào tham số thứ ba chỉ là đổi thông điệp.
+        self.assertRegex(script, re.compile(r"^\s*apply\(await ", re.MULTILINE))
 
 
 if __name__ == "__main__":

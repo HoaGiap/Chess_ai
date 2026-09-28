@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import mimetypes
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -12,6 +13,13 @@ from pydantic import BaseModel
 
 from ..position import MoveError
 from .games import GameNotFound, GameStore
+
+# Không khai báo charset thì trình duyệt giải mã file theo locale, và byte
+# tiếng Việt vỡ thành ký tự phá vỡ chuỗi -> SyntaxError ngay trong app.js.
+# Cần thiết vì toàn bộ giao diện đều là tiếng Việt có dấu.
+mimetypes.add_type("text/javascript; charset=utf-8", ".js")
+mimetypes.add_type("text/css; charset=utf-8", ".css")
+mimetypes.add_type("image/svg+xml; charset=utf-8", ".svg")
 
 STATIC_DIR = Path(__file__).parent / "static"
 

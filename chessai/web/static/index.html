@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="vi" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chess_ai</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<main class="app">
+  <section class="board-area">
+    <div class="board" id="board">
+      <div class="squares" id="squares"></div>
+      <div class="pieces" id="pieces"></div>
+      <div class="picker" id="picker" hidden></div>
+    </div>
+  </section>
+  <aside class="panel">
+    <header class="panel-head">
+      <span class="brand">Chess_ai</span>
+      <button id="theme" class="icon-btn" title="Đổi nền sáng/tối">&#9680;</button>
+    </header>
+    <div class="player" id="player-top">
+      <span class="dot black"></span>
+      <div><strong>Đen</strong><small id="top-sub">—</small></div>
+      <span class="captured" id="top-captured"></span>
+    </div>
+    <div class="player" id="player-bottom">
+      <span class="dot white"></span>
+      <div><strong>Trắng</strong><small id="bottom-sub">—</small></div>
+      <span class="captured" id="bottom-captured"></span>
+    </div>
+    <p class="message" id="message"></p>
+    <ol class="moves" id="moves"></ol>
+    <div class="actions">
+      <button id="undo">Lùi 1 lượt</button>
+      <button id="flip">Lật bàn</button>
+      <button id="pgn">Tải PGN</button>
+      <button id="new" class="primary">Ván mới</button>
+    </div>
+  </aside>
+</main>
+<!-- type="module" là BẮT BUỘC: app.js dùng top-level await ở cuối file.
+     Nạp như classic script sẽ ném SyntaxError và cả trang chết. -->
+<script type="module" src="/static/app.js"></script>
+</body>
+</html>
