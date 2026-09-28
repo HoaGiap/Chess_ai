@@ -82,7 +82,9 @@ Một hàm công khai, thuần:
 def render(board: chess.Board, perspective: Color) -> str: ...
 ```
 
-Quy ước: phe nhìn từ dưới lên. Trắng → hàng `1` ở dưới, hàng `8` ở trên. Đen → đảo cả hàng và cột. Quân trắng dùng ký tự rỗng (`♔♕♖♗♘♙`), quân đen dùng ký tự đặc (`♚♛♜♝♞♟`), ô trống là `.`. Ký hiệu chiếu (`+`) và chiếu hết (`#`) chỉ hiện ở nước vừa đi, do `session` truyền vào, **không** nằm trong `render`.
+Quy ước: phe nhìn từ dưới lên. Trắng → hàng `1` ở dưới, hàng `8` ở trên. Đen → đảo cả hàng và cột. Quân trắng dùng ký tự rỗng (`♔♕♖♗♘♙`), quân đen dùng ký tự đặc (`♚♛♜♝♞♟`), ô trống là `.`.
+
+Bàn cờ **không** in ký hiệu `+` / `#`. Nước vừa đi kèm ký hiệu đó do `Session.last_move_label()` trả về và được in riêng bởi `cli`, nên `render` không cần tham số phụ nào và test của nó chỉ cần so bàn cờ trần.
 
 ### 3.3 `session.py` — ván đấu
 
@@ -104,7 +106,23 @@ class Session:
 
 ### 3.4 `cli.py` — REPL
 
-`main() -> int`. Bảng lệnh tra cứu, không phải chuỗi `if/elif` dài. Lệnh của #1:
+`main() -> int`. Bảng lệnh tra cứu, không phải chuỗi `if/elif` dài.
+
+Khởi động:
+
+```
+python -m chessai.cli [--side white|black] [--both] [--elo N] [--style T] [--mode M]
+```
+
+| Cờ | Mặc định | Ý nghĩa |
+|---|---|---|
+| `--side` | `white` | Phe người chơi. |
+| `--both` | tắt | Đi cả hai bên (chế độ thử nghiệm §3.3). Ghi đè `--side`. |
+| `--elo` | `1500` | Chỉ hiển thị ở #1. |
+| `--style` | `karpov` | Chỉ hiển thị ở #1. |
+| `--mode` | `coach` | Chỉ hiển thị ở #1. |
+
+Lệnh trong REPL:
 
 | Lệnh | Việc |
 |---|---|
