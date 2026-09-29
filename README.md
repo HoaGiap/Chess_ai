@@ -148,8 +148,13 @@ Cần nói thẳng trước khi đưa lên Internet:
    `/api/me` chỉ cần một lệnh GET, nên đây là rào hờm chứ không phải rào
    chống tấn công thật sự. Muốn chống thật thì phải giới hạn theo IP ở tầng
    nginx.
-6. **Ván không được lưu lại.** Tải PGN xong là hết; không có lịch sử lâu dài.
-7. **Sao chép link cần HTTPS.** `navigator.clipboard` chỉ chạy trong ngữ cảnh
+6. **Phòng chỉ xoá khi người cuối bấm "Rời phòng".** Nếu ai đó đóng trình duyệt
+   mà không bấm nút đó, phòng vẫn còn trong danh sách cho tới khi bị đẩy ra
+   theo trần 200 phòng. Cố ý giữ lại như vậy: nếu xoá luôn khi WebSocket
+   ngắt, thì người tạo phòng gửi link rồi đóng máy trước khi bạn bè mở ra
+   sẽ làm phòng biến mất.
+7. **Ván không được lưu lại.** Tải PGN xong là hết; không có lịch sử lâu dài.
+8. **Sao chép link cần HTTPS.** `navigator.clipboard` chỉ chạy trong ngữ cảnh
    an toàn. Trên `http://` nút "Sao chép link" sẽ tự chọn ô link và bảo bạn
    tự copy. Trên tên `*.cloudapp.azure.com` của Azure thì có HTTPS nên không
    gặp vấn đề này.

@@ -249,7 +249,23 @@ class TestPhong(unittest.TestCase):
         rid = self.hai_nguoi()
         response = self.call("POST", f"/api/rooms/{rid}/leave", BL)
         self.assertEqual(response.status_code, 200)
-        self.assertIs(self.body(response)["seat_black"], False)
+        du = self.body(response)
+        self.assertIs(du["room_deleted"], False)          # AL còn ở ghế Trắng
+        self.assertIs(du["room"]["seat_black"], False)   # ghế Đen vừa trống
+
+    def test_roi_phong_thi_bao_ro_phong_co_bi_xoa_khong(self) -> None:
+        rid = self.tao_phong()
+        du = self.body(self.call("POST", f"/api/rooms/{rid}/leave", AL))
+        self.assertIs(du["room_deleted"], True)
+        self.assertEqual(
+            self.call("GET", f"/api/rooms/{rid}", AL).status_code, 404
+        )
+
+    def test_hoi_nguoi_khong_roi(self) -> None:
+        rid = self.hai_nguoi()
+        du = self.body(self.call("POST", f"/api/rooms/{rid}/leave", AL))
+        self.assertIs(du["room_deleted"], False)
+        self.assertEqual(self.call("GET", f"/api/rooms/{rid}", BL).status_code, 200)
 
     def test_nguoi_nao_roi_thi_phai_co_ghe(self) -> None:
         rid = self.hai_nguoi()

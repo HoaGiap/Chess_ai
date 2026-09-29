@@ -180,6 +180,10 @@ class RoomStore:
         self.create_window = create_window
         self._tao_luc: dict[str, list[float]] = {}
         self._rooms: dict[str, _Room] = {}
+        # game_id -> True, để xoá phọn ván khi phòng bị xoá. Biến riêng thay vì
+        # hỏi `games.is_protected` vì hàm đó chỉ trả về True/False, không cho
+        # biết game_id nào cần bỏ cờ bảo vệ.
+        self._protected_vans: set[str] = set()
         self._order: list[str] = []
         self._locks: dict[str, threading.Lock] = {}
         self._listeners: dict[str, list] = {}
@@ -343,6 +347,11 @@ class RoomStore:
             if send in danh:
                 danh.remove(send)
 
+    def _notify_sau_xoa(self, room_id: str) -> None:
+        """Đã xoá phòng nên không còn ai nghe: chỉ cần dọn listener còn sót."""
+        with self._guard:
+            self._listeners.pop(room_id, None)
+
     def _notify(self, room_id: str) -> None:
         """Gọi SAU khi đã thả khoá phòng — `send` sẽ đọc trạng thái, mà đọc
         trạng thái thì lại lấy khoá phòng, nên gọi lúc còn khoá sẽ tự treo."""
@@ -362,6 +371,7 @@ class RoomStore:
         # `protected=True`: ván phòng không được cắt khi trần bộ nhớ đầy, và
         # `POST /api/game/{id}/...` phải từ chối nó.
         game_id = self.games.create(None, protected=True)
+        self._protected_vans.add(game_id)
         room_id = self._new_id()
         with self._guard:
             room = _Room(room_id, game_id, host_token)
@@ -407,7 +417,13 @@ class RoomStore:
         self._notify(room_id)
         return view
 
-    def leave(self, room_id: str, token: str) -> RoomView:
+    def leave(self, room_id: str, token: str) -> tuple[RoomView, bool]:
+        """Rời ghế. Trả `(view, phong_da_bi_xoa)`.
+
+        Phòng KHÔNG còn ai thì xoá luôn. Nếu giữ lại, một phòng tạo nhầm sẽ
+        nằm vĩnh viễn trong danh sách: không ai vào được (đã đủ 2 ghế rồi hoặc
+        không ai chịu vào phòng trống), mà cũng không ai xoá được.
+        """
         with self._lock(room_id):
             room = self._require(room_id)
             if room.white == token:
@@ -415,12 +431,20 @@ class RoomStore:
             elif room.black == token:
                 room.black = None
             room.connected.discard(token)
+            if room.white is None and room.black is None:
+                # Ván của phòng cũng theo, không giữ lại trong bộ nhớ vô ích.
+                if room.game_id in self._protected_vans:
+                    self._protected_vans.discard(room.game_id)
+                    self.games.forget(room.game_id)
+                self._drop(room_id)
+                self._notify_sau_xoa(room_id)
+                return None, True
             self._chuan_hoa_host(room)
             if room.white is None or room.black is None:
                 room.started = False
             view = self._view(room, token)
         self._notify(room_id)
-        return view
+        return view, False
 
     def start(self, room_id: str, token: str) -> RoomView:
         with self._lock(room_id):

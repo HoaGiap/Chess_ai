@@ -129,6 +129,70 @@ class TestVanPhongDuocBaoVe(unittest.TestCase):
         self.assertEqual(danh, [tot[0], tot[2]])
 
 
+class TestRoiPhong(unittest.TestCase):
+    """Rời phòng phải XOÁ phòng nếu không còn ai — không thì phòng tạo nhầm
+    nằm vĩnh viễn trong danh sách và không ai xoá được."""
+
+    def test_roi_khi_phong_trong_thi_phong_bi_xoa(self) -> None:
+        rooms, games = bo()
+        rid = rooms.create(AL)
+        view, da_xoa = rooms.leave(rid, AL)
+        self.assertTrue(da_xoa)
+        with self.assertRaises(NotFound):
+            rooms.view(rid, AL)
+
+    def test_hoi_van_nguoi_thi_phong_con_lai(self) -> None:
+        rooms, games = bo()
+        rid = rooms.create(AL)
+        rooms.join(rid, BL)
+        view, da_xoa = rooms.leave(rid, AL)
+        self.assertFalse(da_xoa)
+        self.assertIs(view.seat_white, False)   # ghế Trắng vừa trống
+        self.assertIs(view.seat_black, True)    # ghế Đen còn người
+        self.assertEqual(rooms.view(rid, BL).you, "black")
+
+    def test_roi_lan_hai_thi_phong_moi_bien_mat(self) -> None:
+        rooms, games = bo()
+        rid = rooms.create(AL)
+        rooms.join(rid, BL)
+        rooms.start(rid, AL)
+        self.assertFalse(rooms.leave(rid, AL)[1])
+        self.assertTrue(rooms.leave(rid, BL)[1])
+        with self.assertRaises(NotFound):
+            rooms.view(rid, BL)
+
+    def test_phong_bi_xoa_thi_khong_con_trong_danh_sach(self) -> None:
+        rooms, games = bo()
+        rid = rooms.create(AL)
+        other = rooms.create(BL)
+        rooms.leave(rid, AL)
+        self.assertEqual([v.id for v in rooms.list()], [other])
+
+    def test_phong_bi_xoa_thi_van_cua_no_voi_lai(self) -> None:
+        """Ván mà không còn phòng thì không được giữ lại trong bộ nhớ vô ích."""
+        games = GameStore()
+        rooms = RoomStore(games)
+        rid = rooms.create(AL)
+        game_id = rooms.game_id_of(rid)
+        rooms.leave(rid, AL)
+        with self.assertRaises(GameNotFound):
+            games.snapshot(game_id)
+
+    def test_van_phong_dang_choi_van_xoa_theo_quy_tac(self) -> None:
+        """Kể cả đang đấu: người cuối cùng bấm rời thì phòng không nên bị bỏ
+        lại trôi trong danh sách. Lần rời đầu vẫn phải giữ phòng, vì còn
+        người ngồi ghế kia."""
+        rooms, games = bo()
+        rid = rooms.create(AL)
+        rooms.join(rid, BL)
+        rooms.start(rid, AL)
+        rooms.move(rid, AL, "e4")
+        self.assertFalse(rooms.leave(rid, BL)[1])       # AL còn ghế Trắng
+        self.assertTrue(rooms.leave(rid, AL)[1])        # giờ mới rỗng
+        with self.assertRaises(NotFound):
+            rooms.view(rid, AL)
+
+
 class TestGhe(unittest.TestCase):
     def test_tao_phong_thi_nguoi_tao_vao_ghe_trang_luon(self) -> None:
         """Người tạo phòng phải chơi được ngay. Nếu để ghế trống thì họ phải tự
@@ -171,7 +235,9 @@ class TestGhe(unittest.TestCase):
         rooms, games = bo()
         rid = rooms.create(AL)
         rooms.join(rid, BL)
-        self.assertIs(rooms.leave(rid, BL).seat_black, False)
+        view, da_xoa = rooms.leave(rid, BL)
+        self.assertFalse(da_xoa)          # BL còn lại trong phòng
+        self.assertIs(view.seat_black, False)
 
     def test_phong_khong_ton_tai(self) -> None:
         rooms, games = bo()
@@ -266,13 +332,21 @@ class TestQuyen(unittest.TestCase):
 
     def test_host_roi_khi_phong_trong_thi_nguoi_vao_se_thanh_host(self) -> None:
         rooms, rid = self._hai_nguoi()
-        rooms.leave(rid, AL)
-        rooms.leave(rid, BL)                     # phòng trống sạch
-        self.assertIsNone(rooms._rooms[rid].host)
-        rooms.join(rid, CC)
-        self.assertEqual(rooms._rooms[rid].host, CC)
-        rooms.join(rid, BL)
-        rooms.start(rid, CC)                     # người vào sau thành host
+        # Host rời, còn BL — phòng sống và quyền host chuyển sang BL.
+        view, da_xoa = rooms.leave(rid, AL)
+        self.assertFalse(da_xoa)
+        self.assertEqual(rooms._rooms[rid].host, BL)
+        self.assertEqual(rooms.view(rid, BL).host_is_you, True)
+
+        # Rồi BL cũng rời — giờ không còn ai, phòng phải biến mất.
+        self.assertTrue(rooms.leave(rid, BL)[1])
+        self.assertNotIn(rid, rooms._rooms)
+
+        # Người sau vào sẽ tạo phòng MỚI, không phải phòng cũ đã xoá.
+        rid_moi = rooms.create(CC)
+        self.assertNotEqual(rid_moi, rid)
+        self.assertEqual(rooms._rooms[rid_moi].host, CC)
+        self.assertTrue(rooms.leave(rid_moi, CC)[1])
 
 
 class TestChoiThat(unittest.TestCase):
@@ -401,7 +475,8 @@ class TestDanhSach(unittest.TestCase):
         rid = rooms.create(AL)
         rooms.join(rid, BL)
         rooms.start(rid, AL)
-        self.assertFalse(rooms.leave(rid, BL).started)
+        view, da_xoa = rooms.leave(rid, BL)
+        self.assertFalse(view.started)
 
 
 class TestGioiHanTaoPhong(unittest.TestCase):

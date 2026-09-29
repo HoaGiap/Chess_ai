@@ -37,6 +37,7 @@ const el = {
   rematch: document.getElementById("rematch"),
   forfeit: document.getElementById("forfeit"),
   newGame: document.getElementById("new"),
+  leaveRoom: document.getElementById("leave-room"),
   elo: document.getElementById("elo"),
   eloValue: document.getElementById("elo-value"),
 };
@@ -551,6 +552,7 @@ function showView(ten) {
   // "Ván mới" gọi `POST /api/game/{id}/new` — trên ván phòng mà bấm là xoá
   // cả ván đang đấu, nên phải ẩn.
   el.newGame.hidden = vanPhong;
+  el.leaveRoom.hidden = !vanPhong;
   el.resign.hidden = !vanPhong;
   el.rematch.hidden = !(vanPhong && room && room.started && state && state.over);
   el.forfeit.hidden = true;
@@ -829,6 +831,34 @@ el.resign.addEventListener("click", async () => {
     applyRoomGame(await apiRoom(`/api/rooms/${room.id}/resign`, "POST"));
   } catch (error) {
     say(error.message, true);
+  }
+});
+
+el.leaveRoom.addEventListener("click", async () => {
+  if (!inRoom() || !room) return;
+  // Rời giữa ván là bỏ ván đi, nên hỏi lại một câu. Bấm nhầm mất cả ván.
+  if (room.started && state && !state.over) {
+    const ok = window.confirm(
+      "Ván đang đánh dở. Rời phòng nghĩa là bỏ ván này — bạn chắc chứ?"
+    );
+    if (!ok) return;
+  }
+  lockUi(true);
+  try {
+    await apiRoom(`/api/rooms/${room.id}/leave`, "POST");
+    closeSocket();
+    stopRoomPoll();
+    room = null;
+    const url = new URL(location.href);
+    url.searchParams.delete("room");
+    history.replaceState(null, "", url);
+    say("");
+    showView("lobby");
+    await taiDanhSach();
+  } catch (error) {
+    say(error.message, true);
+  } finally {
+    lockUi(false);
   }
 });
 

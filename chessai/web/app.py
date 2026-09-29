@@ -179,7 +179,7 @@ def create_app(
     def leave_room(
         room_id: str, x_player: str | None = Header(default=None)
     ) -> JSONResponse:
-        return _guard(lambda: phong.leave(room_id, _token(x_player)).as_dict())
+        return _guard(_roi_phong, phong, room_id, x_player)
 
     @app.post("/api/rooms/{room_id}/start")
     def start_room(
@@ -290,6 +290,14 @@ def _khong_cho_lui(x_player: str | None) -> None:
 
 def _tao_phong(phong: RoomStore, x_player: str | None) -> JSONResponse:
     return JSONResponse({"room_id": phong.create(_token_of(x_player))}, status_code=201)
+
+
+def _roi_phong(phong, room_id: str, x_player: str | None) -> dict:
+    view, da_xoa = phong.leave(room_id, _token_of(x_player))
+    return {
+        "room": None if da_xoa else view.as_dict(),
+        "room_deleted": da_xoa,
+    }
 
 
 def _doc_thuong(games: GameStore, game_id: str) -> dict:
