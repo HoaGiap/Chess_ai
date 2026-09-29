@@ -1,1 +1,17 @@
-python-chess==1.999
+# Thư viện của Chess_ai. Ghim phiên bản để máy ảo cài ra đúng thứ đã
+# kiểm thử — đây là các phiên bản mà 383 test chạy xanh trên chúng.
+#
+# KHÔNG thêm gói mới: dự án chạy được bằng đúng các thứ này, không có
+# bước build, không có npm.
+
+python-chess==1.999    # luật cờ vua (gói python-chess bản 1.x mới nhất)
+fastapi==0.138.0       # web framework
+uvicorn==0.40.0        # máy chủ ASGI
+pydantic==2.12.5       # kiểm dữ liệu vào/ra
+
+# `websockets` KHÔNG phải phụ thuộc gốc của uvicorn — nó là *extra*
+# (`uvicorn[standard]`). Cài `uvicorn` trần thì WebSocket sẽ không có gì để
+# chạy, và phòng chơi hỏng lúc chạy chứ không phải lúc cài. Phải liệt kê ra.
+# Đã kiểm bằng cách tạo venv sạch, cài đúng file này, rồi chạy test và bật
+# thử phòng thật — nếu bỏ dòng này thì phòng chơi không hoạt động.
+websockets==15.0.1    # nâng WebSocket cho phòng chơi người thật

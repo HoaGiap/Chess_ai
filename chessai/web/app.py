@@ -11,6 +11,7 @@ from typing import AsyncIterator, Literal
 
 from fastapi import FastAPI, Header, WebSocket, WebSocketDisconnect
 from fastapi.encoders import jsonable_encoder
+from starlette.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -87,6 +88,10 @@ def create_app(
     app = FastAPI(
         title="Chess_ai web", docs_url=None, redoc_url=None, lifespan=lifespan
     )
+    # Nén phản hồi. `app.js` + `style.css` nặng ~40 KB và trạng thái ván là
+    # JSON; không nén thì mỗi lần hỏi lại phồng lên. GZipMiddleware đi kèm
+    # starlette nên không cài thêm gói.
+    app.add_middleware(GZipMiddleware, minimum_size=800)
 
     @app.get("/")
     def index() -> FileResponse:

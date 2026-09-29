@@ -186,6 +186,7 @@ class TestGhe(unittest.TestCase):
 
     def test_ma_phong_khac_nhau(self) -> None:
         rooms, games = bo()
+        rooms.create_quota = 0            # tắt hạn mức: test này về tính duy nhất
         self.assertEqual(len({rooms.create(AL) for _ in range(50)}), 50)
 
     def test_tran_so_phong_thi_phong_cu_bi_bo(self) -> None:
@@ -401,6 +402,51 @@ class TestDanhSach(unittest.TestCase):
         rooms.join(rid, BL)
         rooms.start(rid, AL)
         self.assertFalse(rooms.leave(rid, BL).started)
+
+
+class TestGioiHanTaoPhong(unittest.TestCase):
+    """Không giới hạn tạo phòng thì một đứa tạo đủ số phòng là đẩy sạch
+    phòng của người khác — trên máy local vô hại, trên Internet thì không."""
+
+    def test_tao_qua_nhieu_phong_trong_mot_lan_thi_bi_tu_choi(self) -> None:
+        rooms = RoomStore(GameStore(), capacity=1000, create_quota=5)
+        for _ in range(rooms.create_quota):
+            rooms.create(AL)
+        with self.assertRaises(Exception):
+            rooms.create(AL)
+
+    def test_quota_reset_theo_thoi_gian(self) -> None:
+        import time as _t
+        rooms, _ = bo()
+        rooms.create_quota = 2
+        rooms.create_window = 0.3
+        rooms.create(AL)
+        rooms.create(AL)
+        with self.assertRaises(Exception):
+            rooms.create(AL)
+        _t.sleep(0.35)
+        rooms.create(AL)          # qua khoang thoi gian thi cho phep lai
+
+    def test_quota_tinh_theo_nguoi_dung_khac_nhau(self) -> None:
+        rooms, _ = bo()
+        rooms.create_quota = 2
+        rooms.create(AL)
+        rooms.create(AL)
+        rooms.create(BL)          # nguoi khac thi khong dung quota cua AL
+
+    def test_van_co_dang_choi_khong_bi_day_ra_khi_don_phong(self) -> None:
+        """Cấu trúc quan trọng hơn cả giới hạn: cắt phòng ĐANG CHƠI trước
+        phòng chờ sẽ làm ván đang đấu biến mất chỉ vì ai đó mở nhiều tab."""
+        games = GameStore()
+        rooms = RoomStore(games, capacity=3)
+        rid = rooms.create(AL)
+        rooms.join(rid, BL)
+        rooms.start(rid, AL)
+        rooms.move(rid, AL, "e4")               # van dang dau
+        for _ in range(10):                     # don phong cho
+            rooms.create(AL)
+        self.assertTrue(rooms.view(rid, AL).you_in_room)
+        self.assertEqual(rooms.games.snapshot(rooms.game_id_of(rid)).moves, ["e4"])
 
 
 class TestKhoa(unittest.TestCase):

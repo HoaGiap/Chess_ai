@@ -102,6 +102,15 @@ class OpponentOnline(RoomError):
         super().__init__("Đối thủ vẫn đang ở trong phòng.")
 
 
+class TooManyRooms(RoomError):
+    status_code = 429
+
+    def __init__(self) -> None:
+        super().__init__(
+            "Bạn tạo phòng hơi nhiều. Chờ một chút rồi thử lại nhé."
+        )
+
+
 class RoomView:
     """Thông tin công khai của phòng.
 
@@ -153,16 +162,61 @@ class _Room:
 
 
 class RoomStore:
-    def __init__(self, games: GameStore, capacity: int = _DEFAULT_CAPACITY) -> None:
+    def __init__(
+        self,
+        games: GameStore,
+        capacity: int = _DEFAULT_CAPACITY,
+        create_quota: int = 20,
+        create_window: float = 3600.0,
+    ) -> None:
         if capacity < 1:
             raise ValueError("capacity phải >= 1")
         self.capacity = capacity
         self.games = games
+        # Không giới hạn tạo phòng thì ai cũng tạo được, và phòng mới sẽ đẩy
+        # phòng cũ của người khác ra khỏi bộ nhớ. Tính theo mã người chơi, cửa
+        # sổ lưu thời điểm tạo phòng gần nhất.
+        self.create_quota = create_quota
+        self.create_window = create_window
+        self._tao_luc: dict[str, list[float]] = {}
         self._rooms: dict[str, _Room] = {}
         self._order: list[str] = []
         self._locks: dict[str, threading.Lock] = {}
         self._listeners: dict[str, list] = {}
         self._guard = threading.Lock()
+
+    def _kiem_quota(self, token: str) -> None:
+        if self.create_quota <= 0:
+            return
+        bay = time.monotonic()
+        khoang = self.create_window
+        danh = [x for x in self._tao_luc.get(token, ()) if bay - x < khoang]
+        if len(danh) >= self.create_quota:
+            self._tao_luc[token] = danh
+            raise TooManyRooms()
+        danh.append(bay)
+        self._tao_luc[token] = danh
+
+    def _cat_binh_ho_phong(self) -> None:
+        """Cắt bỏ phòng cũ nhất, nhưng ưu tiên phòng CHỜ trước phòng ĐANG CHƠI.
+
+        Nếu chỉ cắt theo thứ tự tạo, một người mở nhiều phòng rỗng sẽ đẩy
+        ván đang đấu của người khác ra — ván đó mất trắng dù không ai động vào
+        nó. Cắt phòng chờ trước thì ván đang đấu được bảo vệ ngay cả khi bị
+        dồn phòng.
+        """
+        if len(self._order) <= self.capacity:
+            return
+        thu_tu = sorted(
+            self._order,
+            key=lambda rid: (
+                self._rooms[rid].started,     # False (chờ) trước True (đang chơi)
+                self._rooms[rid].created_at,
+            ),
+        )
+        can_cut = len(self._order) - self.capacity
+        for rid in thu_tu[:can_cut]:
+            self._drop(rid)
 
     # ---- đọc / ghi cơ bản -------------------------------------------
 
@@ -183,6 +237,7 @@ class RoomStore:
                 return rid
 
     def _drop(self, room_id: str) -> None:
+        self._tao_luc = {}          # sổ thời điểm không gắn với phòng nào
         self._rooms.pop(room_id, None)
         self._locks.pop(room_id, None)
         self._listeners.pop(room_id, None)
@@ -302,6 +357,8 @@ class RoomStore:
     # ---- thao tác phòng ---------------------------------------------
 
     def create(self, host_token: str) -> str:
+        with self._guard:
+            self._kiem_quota(host_token)
         # `protected=True`: ván phòng không được cắt khi trần bộ nhớ đầy, và
         # `POST /api/game/{id}/...` phải từ chối nó.
         game_id = self.games.create(None, protected=True)
@@ -315,8 +372,7 @@ class RoomStore:
             self._rooms[room_id] = room
             self._locks[room_id] = threading.Lock()
             self._order.append(room_id)
-            while len(self._order) > self.capacity:
-                self._drop(self._order[0])
+            self._cat_binh_ho_phong()
         self._notify(room_id)
         return room_id
 
